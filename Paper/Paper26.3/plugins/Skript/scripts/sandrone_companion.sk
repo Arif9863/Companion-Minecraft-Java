@@ -1,0 +1,178 @@
+options:
+    # ==== Pendamping Sandrone (fitur lama) ====
+    regen_interval: 45 seconds
+    armor_tier: diamond
+    repair_points: 20
+    message_every: 2
+    followup_every: 3
+    followup_delay: 5
+    sound_on: companion:sandrone.on
+    sound_regen: companion:sandrone.regen
+    sound_followup: companion:sandrone.followup
+    sound_volume: 1
+
+    # ==== DuoVoice ====
+    # Mesin (klaim giliran, cooldown, pemicu) ada di yui_companion.sk.
+    # Nilai prioritas/hold di bawah HARUS disamakan dengan file Yui.
+    prio_idle: 1
+    prio_support: 2
+    hold_idle_seconds: 5
+    hold_support_seconds: 4
+    voice_placeholder_sound: entity.experience_orb.pickup
+    voice_sound_namespace: companion
+    sound_deny: companion:sandrone.deny
+
+    # ==== Absorption (gantikan pemberian armor) ====
+    absorb_level: 3
+    absorb_duration: 1 minute
+
+# Daftar baris Sandrone diisi saat skrip dimuat.
+on load:
+    delete {-voice::sandrone::kill::*}
+    delete {-voice::sandrone::idle::*}
+    delete {-voice::snd::sandrone::kill::*}
+    delete {-voice::snd::sandrone::idle::*}
+    set {-voice::sandrone::kill::1} to "Bagus, Arif. Pertahankan ritmenya seperti yang Aku ajarkan...."
+    set {-voice::snd::sandrone::kill::1} to "{@voice_sound_namespace}:sandrone.kill_01"
+    set {-voice::sandrone::kill::2} to "Kalau cuma begitu, Sandrone pun bisa...."
+    set {-voice::snd::sandrone::kill::2} to "{@voice_sound_namespace}:sandrone.kill_02"
+    set {-voice::sandrone::kill::3} to "Kau tetap saja berisik, ya...."
+    set {-voice::snd::sandrone::kill::3} to "{@voice_sound_namespace}:sandrone.kill_03"
+    set {-voice::sandrone::kill::4} to "Aku tidak pernah bilang aku terkesan."
+    set {-voice::snd::sandrone::kill::4} to "{@voice_sound_namespace}:sandrone.kill_04"
+    set {-voice::sandrone::kill::5} to "Lumayan. ...Tentu saja tidak sebagus aku."
+    set {-voice::snd::sandrone::kill::5} to "{@voice_sound_namespace}:sandrone.kill_05"
+    set {-voice::sandrone::kill::6} to "Bakatmu kuakui. Tapi usahamu kurang."
+    set {-voice::snd::sandrone::kill::6} to "{@voice_sound_namespace}:sandrone.kill_06"
+    set {-voice::sandrone::idle::1} to "Sudah lama berjalan, Arif. Tetap waspada...."
+    set {-voice::snd::sandrone::idle::1} to "{@voice_sound_namespace}:sandrone.idle_01"
+    set {-voice::sandrone::idle::2} to "Arif, Sandrone masih terus melihatmu...."
+    set {-voice::snd::sandrone::idle::2} to "{@voice_sound_namespace}:sandrone.idle_02"
+    set {-voice::sandrone::idle::3} to "Lambat, Arif. Jangan membuatku menunggu...."
+    set {-voice::snd::sandrone::idle::3} to "{@voice_sound_namespace}:sandrone.idle_03"
+    set {-voice::sandrone::idle::4} to "Wajahmu mengantuk, Arif. Kau istirahat dengan benar?"
+    set {-voice::snd::sandrone::idle::4} to "{@voice_sound_namespace}:sandrone.idle_04"
+    set {-voice::sandrone::idle::5} to "Setidaknya tepatilah waktu janji...."
+    set {-voice::snd::sandrone::idle::5} to "{@voice_sound_namespace}:sandrone.idle_05"
+    set {-voice::sandrone::idle::6} to "Mengulang kesalahan yang sama dua kali itu perbuatan orang bodoh."
+    set {-voice::snd::sandrone::idle::6} to "{@voice_sound_namespace}:sandrone.idle_06"
+
+# ==== DuoVoice: pemilihan ucapan Sandrone (anti-ulang per pemain) ====
+# Dipanggil oleh duovoice_speak() di yui_companion.sk.
+function duovoice_sandrone_say(p: player, kind: text) :: boolean:
+    set {_id} to uuid of {_p}
+    set {_count} to size of {-voice::sandrone::%{_kind}%::*}
+    if {_count} is 0:
+        return false
+    set {_i} to random integer between 1 and {_count}
+    set {_line} to {-voice::sandrone::%{_kind}%::%{_i}%}
+    if {_count} is greater than 1:
+        loop 5 times:
+            if {_line} is {-voice::last::%{_id}%}:
+                set {_i} to random integer between 1 and {_count}
+                set {_line} to {-voice::sandrone::%{_kind}%::%{_i}%}
+    set {-voice::last::%{_id}%} to {_line}
+    set {_snd} to {-voice::snd::sandrone::%{_kind}%::%{_i}%}
+    if {_snd} is not set:
+        set {_snd} to "{@voice_placeholder_sound}"
+    set {-voice::playing::%{_id}%} to {_snd}
+    broadcast "&b[Sandrone] %{_line}%"
+    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "sandrone")
+    return true
+
+command /sandrone:
+    description: Panggil atau sembunyikan Sandrone
+    trigger:
+        if {-sandrone-active::%player's uuid%} is true:
+            delete {-sandrone-active::%player's uuid%}
+            delete {-sandfu::%player's uuid%}
+            delete {-sandmsg::%player's uuid%}
+            delete {-sandfollow::%player's uuid%}
+            delete {-voice::idle::%player's uuid%}
+            execute player command "/sandrone-npc off"
+            send "&bJangan ceroboh loh....bilang aja kalau butuh bantuan Sandrone" to player
+        else:
+            set {-sandrone-active::%player's uuid%} to true
+            set {-sandmsg::%player's uuid%} to 0
+            set {-sandfollow::%player's uuid%} to 0
+            send "&bSandrone hanya membantu kali ini saja Arif...." to player
+            execute player command "/sandrone-npc"
+            dv_storage_bind(player, "sandrone")
+            play sound "{@sound_on}" with volume {@sound_volume} and pitch 1 to player
+
+command /sandroneclear:
+    description: Hapus semua Sandrone yang tertinggal
+    trigger:
+        delete {-sandrone-active::*}
+        delete {-sandfu::*}
+        delete {-sandmsg::*}
+        delete {-sandfollow::*}
+        delete {-voice::idle::*}
+        execute player command "/sandrone-npc off"
+        send "&bSandrone dibersihkan." to player
+
+every 1 second:
+    loop all players:
+        if {-sandfu::%loop-player's uuid%} is set:
+            remove 1 from {-sandfu::%loop-player's uuid%}
+            if {-sandfu::%loop-player's uuid%} is less than or equal to 0:
+                delete {-sandfu::%loop-player's uuid%}
+                set {_claimed} to duovoice_claim(loop-player, {@prio_idle}, {@hold_idle_seconds})
+                if {_claimed} is true:
+                    send "&b[Sandrone] Jangan salah paham, aku hanya membantumu kali ini ya Arif..." to loop-player
+                    set {-voice::playing::%loop-player's uuid%} to "{@sound_followup}"
+                    play sound "{@sound_followup}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
+                    play sound "entity.experience_orb.pickup" to loop-player
+
+every {@regen_interval}:
+    loop all players:
+        if {-sandrone-active::%loop-player's uuid%} is true:
+            if loop-player is alive:
+                # Absorption III (hati emas). Diberi ulang tiap siklus 45 detik
+                # dengan durasi 1 menit, jadi efek tidak pernah keburu habis.
+                # Armor yang sudah dipakai TIDAK dilepas, hanya tidak diberi baru.
+                apply absorption {@absorb_level} to loop-player for {@absorb_duration}
+                add 1 to {-sandmsg::%loop-player's uuid%}
+                add 1 to {-sandfollow::%loop-player's uuid%}
+                set {_say} to false
+                if {-sandmsg::%loop-player's uuid%} is greater than or equal to {@message_every}:
+                    set {_say} to true
+                if {_say} is true:
+                    set {-sandmsg::%loop-player's uuid%} to 0
+                    # Pesan SELALU tampil; klaim hanya agar idle tidak menumpuk di atasnya.
+                    set {_claimed} to duovoice_claim(loop-player, {@prio_support}, {@hold_support_seconds})
+                    if {_claimed} is true:
+                        set {-voice::playing::%loop-player's uuid%} to "{@sound_regen}"
+                    send action bar "&bBiar nona Sandrone yang melindungimu hmmpphh..." to loop-player
+                    send "&b[Sandrone] Mundurlah Arif.....biar nona Sandrone yang menolongmu" to loop-player
+                    play sound "{@sound_regen}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
+                set {_follow} to false
+                if {-sandfollow::%loop-player's uuid%} is greater than or equal to {@followup_every}:
+                    set {_follow} to true
+                if {_follow} is true:
+                    set {-sandfollow::%loop-player's uuid%} to 0
+                    set {-sandfu::%loop-player's uuid%} to {@followup_delay}
+
+on quit:
+    delete {-sandrone-active::%player's uuid%}
+    delete {-sandfu::%player's uuid%}
+    delete {-sandmsg::%player's uuid%}
+    delete {-sandfollow::%player's uuid%}
+
+# ==== Kantong Sandrone ====
+# Mesin (dv_storage_open / dv_storage_save / dv_storage_bind) ada di yui_companion.sk.
+on rightclick on a mannequin:
+    set {_ok} to false
+    if scoreboard tags of clicked entity contains "companion_sandrone":
+        if {-sandrone-active::%player's uuid%} is true:
+            set {_ok} to true
+    if {_ok} is false:
+        stop trigger
+    cancel event
+    # Kunci pemilik: hanya pemilik NPC ini yang boleh membuka kantongnya.
+    set {_nid} to uuid of clicked entity
+    if {-dv::owner::%{_nid}%} is not player's uuid:
+        broadcast "&b[Sandrone] Cihhh...saya hanya membantu Arif saja!!!"
+        play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
+        stop trigger
+    dv_storage_open(player, "sandrone")

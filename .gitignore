@@ -1,0 +1,64 @@
+# ===== Paper server runtime data =====
+# World saves, generated caches, and server binaries are not source code.
+Paper/Paper26.3/world/
+Paper/Paper26.3/world_old/
+Paper/Paper26.3/cache/
+Paper/Paper26.3/libraries/
+Paper/Paper26.3/versions/
+Paper/Paper26.3/logs/
+Paper/Paper26.3/crash-reports/
+Paper/Paper26.3/.paper/
+Paper/Paper26.3/session.lock
+Paper/Paper26.3/paper.jar
+Paper/Paper26.3/*.log
+# Contains a management-server secret; keep it out of version control.
+Paper/Paper26.3/server.properties
+
+# Player/server state that changes on every run.
+Paper/Paper26.3/usercache.json
+Paper/Paper26.3/duovoice-backup/
+Paper/Paper26.3/ops.json
+Paper/Paper26.3/banned-ips.json
+Paper/Paper26.3/banned-players.json
+Paper/Paper26.3/whitelist.json
+
+# The built resource pack ZIP and the extracted copy are build output.
+# The source audio stays tracked in resource-pack-source/.
+Paper/Paper26.3/companion-voices-*.zip
+Paper/Paper26.3/resource-pack/
+
+# Third-party plugin jars.
+Paper/Paper26.3/plugins/*.jar
+
+# Runtime plugin folders owned by the server, not by us.
+Paper/Paper26.3/plugins/bStats/
+Paper/Paper26.3/plugins/spark/
+Paper/Paper26.3/plugins/CompanionNPCs/config.yml
+Paper/Paper26.3/plugins/CompanionNPCs/modes.yml
+
+# Skript's own config and examples; we only keep our companion scripts.
+Paper/Paper26.3/plugins/Skript/config.sk
+Paper/Paper26.3/plugins/Skript/features.sk
+Paper/Paper26.3/plugins/Skript/variables.csv
+Paper/Paper26.3/plugins/Skript/lang/
+Paper/Paper26.3/plugins/Skript/backups/
+Paper/Paper26.3/plugins/Skript/scripts/-examples/
+Paper/Paper26.3/plugins/Skript/scripts/-yui_test.sk
+Paper/Paper26.3/plugins/Skript/scripts/*.bak
+Paper/Paper26.3/plugins/Skript/scripts/*.bak2
+Paper/Paper26.3/plugins/Skript/scripts/-- Files prefixed with a hyphen are disabled! --
+
+# Local Claude Code settings for this machine.
+.claude/
+
+# ===== Build output =====
+plugin/target/
+plugin/build/classes/
+plugin/build/stub-classes/
+*.class
+
+# ===== Editor / OS =====
+.DS_Store
+Thumbs.db
+*.swp
+*~

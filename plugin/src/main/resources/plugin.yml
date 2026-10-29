@@ -1,0 +1,38 @@
+name: CompanionNPCs
+version: 1.0.0
+main: com.arif.companion.CompanionNpcsPlugin
+api-version: '26.3'
+authors: [Arif]
+description: Skin-bearing Yui and Sandrone mannequin companions for Paper 26.3
+commands:
+  yui-npc:
+    aliases: [yui-chan]
+    description: Spawn or dismiss Yui mannequin NPC companion
+    usage: /yui-npc [skin-url|default|off]
+    permission: companion.npc.yui
+  sandrone-npc:
+    aliases: [sandrone-chan]
+    description: Spawn or dismiss Sandrone mannequin NPC companion
+    usage: /sandrone-npc [skin-url|default|off]
+    permission: companion.npc.sandrone
+  companionnpc:
+    description: Companion NPC administration
+    usage: /companionnpc <reload|clear>
+    permission: companion.npc.admin
+  kesini:
+    description: Call your companions close to you for small rooms (stays until /ikut)
+    usage: /kesini [yui|sandrone|semua]
+    permission: companion.npc.close
+  ikut:
+    description: Bring your companions back to the normal formation and distance
+    usage: /ikut [yui|sandrone|semua]
+    permission: companion.npc.close
+permissions:
+  companion.npc.yui:
+    default: true
+  companion.npc.sandrone:
+    default: true
+  companion.npc.admin:
+    default: op
+  companion.npc.close:
+    default: true

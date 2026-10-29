@@ -1,0 +1,425 @@
+options:
+    # ==== Pendamping Yui (fitur lama) ====
+    heal_interval: 10 seconds
+    heal_hearts: 1
+    message_every: 2
+    followup_every: 3
+    followup_delay: 5
+    sound_on: companion:yui.on
+    sound_heal: companion:yui.heal
+    sound_followup: companion:yui.followup
+    sound_volume: 1
+
+    # ==== DuoVoice: mesin bersama (juga dipakai file Sandrone) ====
+    kills_per_speech: 3
+    timed_interval_seconds: 120
+    speech_cooldown_seconds: 8
+    hold_kill_seconds: 4
+    hold_support_seconds: 4
+    hold_idle_seconds: 5
+    prio_kill: 3
+    prio_support: 2
+    prio_idle: 1
+    count_all_mobs: false
+    voice_placeholder_sound: entity.experience_orb.pickup
+    voice_sound_namespace: companion
+
+    # ==== Kantong pendamping ====
+    # 3 baris = 27 slot. Ubah angka ini kalau mau lebih banyak.
+    storage_rows: 3
+    sound_deny: companion:yui.deny
+
+# Daftar baris Yui diisi saat skrip dimuat.
+# Tiap baris punya nama suara sendiri, disimpan di cabang {-voice::snd::...}
+# supaya tidak ikut terhitung saat menghitung jumlah baris.
+# Urutan nomor suara HARUS sama dengan nomor dialog di bawah.
+# Catatan: mesin DuoVoice ada di file ini, jadi sandrone_companion.sk
+# memanggil fungsi dari sini. KEDUA file harus tetap aktif bersamaan.
+on load:
+    set {-voice::enabled} to true
+    delete {-voice::yui::kill::*}
+    delete {-voice::yui::idle::*}
+    delete {-voice::snd::yui::kill::*}
+    delete {-voice::snd::yui::idle::*}
+    set {-voice::yui::kill::1} to "Hebat sekali Arif, nanti ajarin Yui ya...."
+    set {-voice::snd::yui::kill::1} to "{@voice_sound_namespace}:yui.kill_01"
+    set {-voice::yui::kill::2} to "Arif.....jangan lupa jaga dirimu ya...."
+    set {-voice::snd::yui::kill::2} to "{@voice_sound_namespace}:yui.kill_02"
+    set {-voice::yui::idle::1} to "Arif, jangan lupa periksa jumlah amunisi mu...."
+    set {-voice::snd::yui::idle::1} to "{@voice_sound_namespace}:yui.idle_01"
+    set {-voice::yui::idle::2} to "Arif.....Yui siap membantumu kapan pun dan dimana pun...."
+    set {-voice::snd::yui::idle::2} to "{@voice_sound_namespace}:yui.idle_02"
+    set {-voice::yui::idle::3} to "Aku sudah menunggumu! Ayo, kita pergi bersama!"
+    set {-voice::snd::yui::idle::3} to "{@voice_sound_namespace}:yui.idle_03"
+    set {-voice::yui::idle::4} to "Tak perlu terburu-buru. Mari nikmati pemandangannya pelan-pelan!"
+    set {-voice::snd::yui::idle::4} to "{@voice_sound_namespace}:yui.idle_04"
+    set {-voice::yui::idle::5} to "Perjalanan itu bukan cuma soal tujuan, proses di tengah jalan juga penting!"
+    set {-voice::snd::yui::idle::5} to "{@voice_sound_namespace}:yui.idle_05"
+    set {-voice::yui::idle::6} to "Kalau capek bilang saja. Kita bisa istirahat kapan saja!"
+    set {-voice::snd::yui::idle::6} to "{@voice_sound_namespace}:yui.idle_06"
+    set {-voice::yui::idle::7} to "Kalau Arif menikmatinya, itu sudah jadi imbalan terbaik bagiku!"
+    set {-voice::snd::yui::idle::7} to "{@voice_sound_namespace}:yui.idle_07"
+    set {-voice::yui::idle::8} to "Kau sedang murung? Kalau aku bisa, cerita kan saja padaku!"
+    set {-voice::snd::yui::idle::8} to "{@voice_sound_namespace}:yui.idle_08"
+
+# ==== DuoVoice: penjaga giliran suara per pemain ====
+# Prioritas lebih tinggi boleh memotong suara yang sedang berjalan;
+# prioritas sama atau lebih rendah dibuang.
+function duovoice_claim(p: player, priority: number, hold: number) :: boolean:
+    set {_id} to uuid of {_p}
+    if {-voice::busy::%{_id}%} is set:
+        if {-voice::busy::%{_id}%} is greater than 0:
+            if {_priority} is greater than {-voice::busy_prio::%{_id}%}:
+                if {-voice::playing::%{_id}%} is set:
+                    set {_stop} to {-voice::playing::%{_id}%}
+                    stop sound "%{_stop}%" in voice category for {_p}
+                    delete {-voice::playing::%{_id}%}
+            else:
+                return false
+    set {-voice::busy::%{_id}%} to {_hold}
+    set {-voice::busy_prio::%{_id}%} to {_priority}
+    return true
+
+# Posisi suara: mannequin pendamping terdekat (per arketipe), fallback ke posisi pemain.
+function duovoice_sound_location(p: player, kind: text) :: location:
+    set {_best} to location of {_p}
+    set {_best_dist} to 9999
+    set {_tag} to "companion_%{_kind}%"
+    loop all mannequins within radius 32 blocks of location of {_p}:
+        if scoreboard tags of loop-entity contains {_tag}:
+            set {_distance} to distance between location of loop-entity and location of {_p}
+            if {_distance} is less than {_best_dist}:
+                set {_best_dist} to {_distance}
+                set {_best} to location of loop-entity
+    return {_best}
+
+# ==== DuoVoice: pemilihan ucapan Yui (anti-ulang per pemain) ====
+function duovoice_yui_say(p: player, kind: text) :: boolean:
+    set {_id} to uuid of {_p}
+    set {_count} to size of {-voice::yui::%{_kind}%::*}
+    if {_count} is 0:
+        return false
+    set {_i} to random integer between 1 and {_count}
+    set {_line} to {-voice::yui::%{_kind}%::%{_i}%}
+    if {_count} is greater than 1:
+        loop 5 times:
+            if {_line} is {-voice::last::%{_id}%}:
+                set {_i} to random integer between 1 and {_count}
+                set {_line} to {-voice::yui::%{_kind}%::%{_i}%}
+    set {-voice::last::%{_id}%} to {_line}
+    set {_snd} to {-voice::snd::yui::%{_kind}%::%{_i}%}
+    if {_snd} is not set:
+        set {_snd} to "{@voice_placeholder_sound}"
+    set {-voice::playing::%{_id}%} to {_snd}
+    broadcast "&d[Yui] %{_line}%"
+    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "yui")
+    return true
+
+# ==== Kantong pendamping: mesin bersama (juga dipakai file Sandrone) ====
+# Isi disimpan di {companion::storage::...} TANPA tanda minus, jadi ikut
+# tersimpan ke variables.csv dan bertahan walau server restart atau logout.
+function dv_storage_open(p: player, kind: text):
+    # Kantong yang sedang terbuka disimpan dulu, supaya tidak terjadi duplikat.
+    dv_storage_save({_p})
+    set {_id} to uuid of {_p}
+    set {_title} to "Kantong Yui"
+    if {_kind} is "sandrone":
+        set {_title} to "Kantong Sandrone"
+    set {_slots} to {@storage_rows} * 9
+    set {_inv} to a new chest inventory with {@storage_rows} rows named "%{_title}%"
+    loop {_slots} times:
+        set {_i} to loop-number - 1
+        if {companion::storage::%{_id}%::%{_kind}%::%{_i}%} is set:
+            set slot {_i} of {_inv} to {companion::storage::%{_id}%::%{_kind}%::%{_i}%}
+    open {_inv} to {_p}
+    # Dicatat SETELAH jendela lama tertutup, supaya tidak ikut tersimpan ulang.
+    set {-dv::kind::%{_id}%} to {_kind}
+    set {-dv::inv::%{_id}%} to {_inv}
+
+function dv_storage_save(p: player):
+    set {_id} to uuid of {_p}
+    if {-dv::kind::%{_id}%} is set:
+        set {_kind} to {-dv::kind::%{_id}%}
+        set {_inv} to {-dv::inv::%{_id}%}
+        if {_inv} is set:
+            set {_slots} to {@storage_rows} * 9
+            loop {_slots} times:
+                set {_i} to loop-number - 1
+                if slot {_i} of {_inv} is air:
+                    delete {companion::storage::%{_id}%::%{_kind}%::%{_i}%}
+                else:
+                    set {companion::storage::%{_id}%::%{_kind}%::%{_i}%} to slot {_i} of {_inv}
+        delete {-dv::kind::%{_id}%}
+        delete {-dv::inv::%{_id}%}
+
+# Mencatat pemilik dari NPC pendamping yang baru dipanggil.
+# Dipanggil /yui dan /sandrone SETELAH perintah pemanggilan NPC dijalankan.
+function dv_storage_bind(p: player, kind: text):
+    wait 2 ticks
+    set {_id} to uuid of {_p}
+    set {_tag} to "companion_%{_kind}%"
+    set {_best_dist} to 9999
+    loop all mannequins within radius 4 blocks of location of {_p}:
+        if scoreboard tags of loop-entity contains {_tag}:
+            set {_d} to distance between location of loop-entity and location of {_p}
+            if {_d} is less than {_best_dist}:
+                set {_best_dist} to {_d}
+                set {_npc} to loop-entity
+    if {_npc} is set:
+        set {_nid} to uuid of {_npc}
+        set {-dv::owner::%{_nid}%} to {_id}
+
+# ==== DuoVoice: orkestrator ====
+# Klaim giliran SEBELUM ucapan dikeluarkan; cooldown hanya dipasang
+# setelah ucapan benar-benar keluar.
+function duovoice_speak(p: player, kind: text) :: boolean:
+    set {_spoke} to false
+    if {-voice::enabled} is true:
+        set {_id} to uuid of {_p}
+        set {_ready} to false
+        if {-voice::cd::%{_id}%} is set:
+            if {-voice::cd::%{_id}%} is 0:
+                set {_ready} to true
+        else:
+            set {_ready} to true
+        if {_ready} is true:
+            set {_yui} to false
+            set {_sand} to false
+            if {-yui-active::%{_id}%} is true:
+                set {_yui} to true
+            if {-sandrone-active::%{_id}%} is true:
+                set {_sand} to true
+            set {_prio} to {@prio_idle}
+            set {_hold} to {@hold_idle_seconds}
+            if {_kind} is "kill":
+                set {_prio} to {@prio_kill}
+                set {_hold} to {@hold_kill_seconds}
+            set {_ok} to duovoice_claim({_p}, {_prio}, {_hold})
+            if {_ok} is true:
+                if {_yui} is true:
+                    if {_sand} is true:
+                        set {_roll} to random integer between 1 and 2
+                        if {_roll} is 1:
+                            set {_spoke} to duovoice_yui_say({_p}, {_kind})
+                        else:
+                            set {_spoke} to duovoice_sandrone_say({_p}, {_kind})
+                    else:
+                        set {_spoke} to duovoice_yui_say({_p}, {_kind})
+                else:
+                    if {_sand} is true:
+                        set {_spoke} to duovoice_sandrone_say({_p}, {_kind})
+                if {_spoke} is true:
+                    set {-voice::cd::%{_id}%} to {@speech_cooldown_seconds}
+    return {_spoke}
+
+# ==== Pemicu kill ====
+# Hanya hitung kill oleh pemain yang punya pendamping aktif.
+# Entitas pendamping (tag companion_npc) tidak pernah dihitung.
+on death:
+    if attacker is a player:
+        set {_p} to attacker
+    else:
+        stop trigger
+    set {_id} to uuid of {_p}
+    set {_active} to false
+    if {-yui-active::%{_id}%} is true:
+        set {_active} to true
+    if {-sandrone-active::%{_id}%} is true:
+        set {_active} to true
+    if {_active} is false:
+        stop trigger
+    if {-voice::enabled} is true:
+        set {_valid} to false
+        set {_all} to {@count_all_mobs}
+        if {_all} is true:
+            set {_valid} to true
+        if victim is a monster:
+            set {_valid} to true
+        if victim is a player:
+            set {_valid} to false
+        if victim is an armor stand:
+            set {_valid} to false
+        if scoreboard tags of victim contains "companion_npc":
+            set {_valid} to false
+        if {_valid} is true:
+            add 1 to {-voice::kill::%{_id}%}
+            if {-voice::kill::%{_id}%} is less than {@kills_per_speech}:
+                stop trigger
+            set {_cd} to 0
+            if {-voice::cd::%{_id}%} is set:
+                set {_cd} to {-voice::cd::%{_id}%}
+            if {_cd} is greater than 0:
+                # Dalam cooldown: penghitung TIDAK direset; bicara di kill berikutnya.
+                stop trigger
+            set {-voice::kill::%{_id}%} to 0
+            duovoice_speak({_p}, "kill")
+
+# ==== Mesin waktu (idle) ====
+# Hitung mundur per detik per pemain. Tick yang terlewat tidak diulang:
+# saat jatuh tempo timer langsung diisi penuh kembali.
+every 1 second:
+    loop all players:
+        set {_id} to uuid of loop-player
+        if {-voice::cd::%{_id}%} is set:
+            if {-voice::cd::%{_id}%} is greater than 0:
+                remove 1 from {-voice::cd::%{_id}%}
+        if {-voice::busy::%{_id}%} is set:
+            if {-voice::busy::%{_id}%} is greater than 0:
+                remove 1 from {-voice::busy::%{_id}%}
+                if {-voice::busy::%{_id}%} is 0:
+                    delete {-voice::playing::%{_id}%}
+                    delete {-voice::busy_prio::%{_id}%}
+        if {-voice::enabled} is true:
+            set {_has} to false
+            if {-yui-active::%{_id}%} is true:
+                set {_has} to true
+            if {-sandrone-active::%{_id}%} is true:
+                set {_has} to true
+            if {_has} is true:
+                if loop-player is alive:
+                    if {-voice::idle::%{_id}%} is set:
+                        remove 1 from {-voice::idle::%{_id}%}
+                        if {-voice::idle::%{_id}%} is less than 1:
+                            set {-voice::idle::%{_id}%} to {@timed_interval_seconds}
+                            set {_ready} to false
+                            if {-voice::cd::%{_id}%} is set:
+                                if {-voice::cd::%{_id}%} is 0:
+                                    set {_ready} to true
+                            else:
+                                set {_ready} to true
+                            if {_ready} is true:
+                                duovoice_speak(loop-player, "idle")
+                    else:
+                        set {-voice::idle::%{_id}%} to {@timed_interval_seconds}
+
+# ==== Perintah global: nyalakan/bisukan obrolan ====
+# Hanya OP (dan konsol) yang boleh mengubah status seluruh server.
+command /yuisandrone:
+    description: Nyalakan atau bisukan obrolan Yui dan Sandrone
+    trigger:
+        if player is set:
+            set {_allowed} to false
+            if player is op:
+                set {_allowed} to true
+            if {_allowed} is false:
+                send "&cHanya OP yang dapat mengubah obrolan Yui dan Sandrone." to player
+                stop trigger
+        delete {-voice::kill::*}
+        delete {-voice::idle::*}
+        if {-voice::enabled} is true:
+            set {-voice::enabled} to false
+            broadcast "Obrolan Yui dan Sandrone: Hubungi kami kapan saja.."
+        else:
+            set {-voice::enabled} to true
+            broadcast "Obrolan Yui dan Sandrone: Siap menemani perjalananmu"
+
+command /yui:
+    description: Panggil atau sembunyikan Yui
+    trigger:
+        if {-yui-active::%player's uuid%} is true:
+            delete {-yui-active::%player's uuid%}
+            delete {-yuifu::%player's uuid%}
+            delete {-yuimsg::%player's uuid%}
+            delete {-yuifollow::%player's uuid%}
+            delete {-voice::idle::%player's uuid%}
+            execute player command "/yui-npc off"
+            send "&dHubungi Yui Kapan saja ya... Arif......" to player
+        else:
+            set {-yui-active::%player's uuid%} to true
+            set {-yuimsg::%player's uuid%} to 0
+            set {-yuifollow::%player's uuid%} to 0
+            send "&dAsisten Yui siap membantu Arif....." to player
+            execute player command "/yui-npc"
+            dv_storage_bind(player, "yui")
+            play sound "{@sound_on}" with volume {@sound_volume} and pitch 1 to player
+
+command /yuiclear:
+    description: Hapus semua Yui yang tertinggal
+    trigger:
+        delete {-yui-active::*}
+        delete {-yuifu::*}
+        delete {-yuimsg::*}
+        delete {-yuifollow::*}
+        delete {-voice::idle::*}
+        execute player command "/yui-npc off"
+        send "&dYui dibersihkan." to player
+
+every 1 second:
+    loop all players:
+        if {-yuifu::%loop-player's uuid%} is set:
+            remove 1 from {-yuifu::%loop-player's uuid%}
+            if {-yuifu::%loop-player's uuid%} is less than or equal to 0:
+                delete {-yuifu::%loop-player's uuid%}
+                set {_claimed} to duovoice_claim(loop-player, {@prio_idle}, {@hold_idle_seconds})
+                if {_claimed} is true:
+                    send "&d[Yui] Perhatikan kondisi fisikmu, Yui khawatir sekali" to loop-player
+                    set {-voice::playing::%loop-player's uuid%} to "{@sound_followup}"
+                    play sound "{@sound_followup}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
+                    play sound "entity.experience_orb.pickup" to loop-player
+
+every {@heal_interval}:
+    loop all players:
+        if {-yui-active::%loop-player's uuid%} is true:
+            if loop-player is alive:
+                if health of loop-player is less than maximum health of loop-player:
+                    heal loop-player by {@heal_hearts} hearts
+                    play sound "entity.player.levelup" to loop-player
+                    add 1 to {-yuimsg::%loop-player's uuid%}
+                    add 1 to {-yuifollow::%loop-player's uuid%}
+                    set {_full} to false
+                    if health of loop-player is greater than or equal to maximum health of loop-player:
+                        set {_full} to true
+                    set {_say} to {_full}
+                    if {-yuimsg::%loop-player's uuid%} is greater than or equal to {@message_every}:
+                        set {_say} to true
+                    if {_say} is true:
+                        set {-yuimsg::%loop-player's uuid%} to 0
+                        # Pesan heal SELALU tampil; klaim hanya agar idle tidak menumpuk di atasnya.
+                        set {_claimed} to duovoice_claim(loop-player, {@prio_support}, {@hold_support_seconds})
+                        if {_claimed} is true:
+                            set {-voice::playing::%loop-player's uuid%} to "{@sound_heal}"
+                        send action bar "&dSayang kamu terluka, biar Yui merawatmu...." to loop-player
+                        send "&d[Yui] Arif.....mundur, biar Yui merawatmu" to loop-player
+                        play sound "{@sound_heal}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
+                    set {_follow} to {_full}
+                    if {-yuifollow::%loop-player's uuid%} is greater than or equal to {@followup_every}:
+                        set {_follow} to true
+                    if {_follow} is true:
+                        set {-yuifollow::%loop-player's uuid%} to 0
+                        set {-yuifu::%loop-player's uuid%} to {@followup_delay}
+
+on quit:
+    delete {-yui-active::%player's uuid%}
+    delete {-yuifu::%player's uuid%}
+    delete {-yuimsg::%player's uuid%}
+    delete {-yuifollow::%player's uuid%}
+    delete {-voice::cd::%player's uuid%}
+    delete {-voice::busy::%player's uuid%}
+    delete {-voice::busy_prio::%player's uuid%}
+    delete {-voice::playing::%player's uuid%}
+    delete {-voice::idle::%player's uuid%}
+    delete {-voice::kill::%player's uuid%}
+    delete {-voice::last::%player's uuid%}
+
+# ==== Kantong Yui ====
+on rightclick on a mannequin:
+    set {_ok} to false
+    if scoreboard tags of clicked entity contains "companion_yui":
+        if {-yui-active::%player's uuid%} is true:
+            set {_ok} to true
+    if {_ok} is false:
+        stop trigger
+    cancel event
+    # Kunci pemilik: hanya pemilik NPC ini yang boleh membuka kantongnya.
+    set {_nid} to uuid of clicked entity
+    if {-dv::owner::%{_nid}%} is not player's uuid:
+        broadcast "&d[Yui] Hati dan kasih Yui hanya untuk Arif"
+        play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
+        stop trigger
+    dv_storage_open(player, "yui")
+
+on inventory close:
+    dv_storage_save(player)
+
+on quit:
+    dv_storage_save(player)

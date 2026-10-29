@@ -1,0 +1,44 @@
+# Optional hosted skin URL. Leave blank to use the bundled character skin in the companion resource pack.
+yui:
+  skin-url: ""
+sandrone:
+  skin-url: ""
+
+# Comfort distance: the companion stops closing in and stands still when closer than this.
+# Yui stands on your left, Sandrone on your right, so they never crowd each other.
+# Used in FOLLOW mode (/ikut).
+comfort-distance: 3.0
+
+# Close distance: how near the companions come when you call them with /kesini.
+# CLOSE mode ignores the formation: both come to one tight spot at your feet.
+# 1.8 keeps them close but stops them shoving the owner aside.
+# The mode stays in force until /ikut is used.
+close-distance: 1.8
+
+# Teleport catch-up threshold (supported range 16-32).
+# If the companion is farther than this while in FOLLOW mode, it teleports back to its
+# formation spot instead of walking. Raise for more natural walking.
+teleport-distance: 24
+
+# Teleport catch-up threshold for CLOSE mode (/kesini), same supported range.
+# The companion lands beside you instead of on its formation side.
+close-teleport-distance: 24
+
+# Radius within which an idle companion glances at a nearby mob (supported range 4-24).
+# While idle it watches the owner; a mob inside this radius gets a 2-3 second glance,
+# then attention returns to the owner.
+idle-look-mob-radius: 12
+
+# How far from the owner a barely-moving companion may still glance at nearby mobs.
+# This is what makes the gaze actually happen during play: with the old 1.8-block
+# comfort distance it almost never ran outside of standing on top of the owner.
+idle-look-standstill-distance: 6
+
+# Serve the companion resource pack over HTTP so other players download it automatically.
+# The URL to put into server.properties (resource-pack=...) is printed at startup.
+pack-http-server: true
+pack-http-port: 8765
+
+# Debug-only: when enabled, spawn both NPCs for first player online at plugin startup.
+# Keep false on your main server. Used only for isolated test server.
+debug-self-test: false
