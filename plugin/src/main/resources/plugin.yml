@@ -31,9 +31,9 @@ commands:
     description: Let your companions fight hostile mobs that attack you
     usage: /serang [yui|sandrone|semua]
     permission: companion.npc.attack
-  berhenti:
-    description: Tell your companions to stop fighting
-    usage: /berhenti [yui|sandrone|semua]
+  tahan:
+    description: Tell your companions to hold their strikes
+    usage: /tahan [yui|sandrone|semua]
     permission: companion.npc.attack
 permissions:
   companion.npc.yui:

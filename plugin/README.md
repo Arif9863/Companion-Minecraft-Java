@@ -17,7 +17,7 @@ This plugin spawns skin-bearing `Mannequin` entities, using only Paper's public 
 - `/kesini [yui|sandrone|semua]` — switch the companions to **CLOSE** mode.
 - `/ikut [yui|sandrone|semua]` — switch them back to **FOLLOW** mode.
 - `/serang [yui|sandrone|semua]` — let the companions fight hostile mobs for you.
-- `/berhenti [yui|sandrone|semua]` — stand down again.
+- `/tahan [yui|sandrone|semua]` — hold their strikes again.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
 
@@ -38,7 +38,7 @@ companion can hold the formation and still fight.
 - **It is never a target.** Any mob that would choose a companion is refused, so it keeps coming
   for you instead. A companion that had drawn aggro has it handed back to you on the next swing.
 - **Armed only while fighting.** The companion holds an iron sword while `/serang` is active and
-  puts it away on `/berhenti`.
+  puts it away on `/tahan`.
 - Combats take precedence over the formation spot: a companion leaves its side while chasing, and
   returns as soon as the fight ends.
 

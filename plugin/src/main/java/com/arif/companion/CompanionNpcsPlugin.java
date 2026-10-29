@@ -49,13 +49,13 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("kesini", new ModeCommand(CompanionManager.FollowMode.CLOSE, "Kesini"));
         registerCommand("ikut", new ModeCommand(CompanionManager.FollowMode.FOLLOW, "Ikut"));
         registerCommand("serang", new AttackCommand(true));
-        registerCommand("berhenti", new AttackCommand(false));
+        registerCommand("tahan", new AttackCommand(false));
         registerCommand("companionnpc", new AdminCommand());
         Bukkit.getPluginManager().registerEvents(new CompanionListener(this), this);
 
         startPackServer();
 
-        getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /serang, /berhenti, /companionnpc");
+        getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /serang, /tahan, /companionnpc");
         if (getConfig().getBoolean("debug-self-test", false)) {
             runSelfTest();
         }
@@ -394,7 +394,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     }
 
     /**
-     * The {@code /serang} and {@code /berhenti} pair: an independent toggle for melee combat that
+     * The {@code /serang} and {@code /tahan} pair: an independent toggle for melee combat that
      * can be combined with either follow mode, so a companion can stay close and still fight.
      */
     private final class AttackCommand implements CommandExecutor, TabCompleter {
@@ -424,7 +424,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 player.sendMessage(Component.text("Siap bertarung untuk " + target
                         + ". Mereka menyerang mob yang menyerangmu.", NamedTextColor.GREEN));
             } else {
-                player.sendMessage(Component.text("Tidak menyerang untuk " + target
+                player.sendMessage(Component.text("Tidak bertarung untuk " + target
                         + ". Pedang disingkirkan.", NamedTextColor.GREEN));
             }
             return true;
