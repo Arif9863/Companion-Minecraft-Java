@@ -69,6 +69,13 @@ public final class CompanionManager {
 
     /** A* and movement budget: never exceed a small per-tick planning window. */
     private static final long REPLAN_INTERVAL_TICKS = 100L;
+    /**
+     * How often the route is refreshed while the companion is chasing a mob.
+     *
+     * <p>6 ticks (0.3 seconds). A fight is too dynamic for the relaxed 5-second follow interval:
+     * a stale route makes the companion walk towards where the mob used to be.</p>
+     */
+    private static final long COMBAT_REPLAN_INTERVAL_TICKS = 6L;
     private static final double GOAL_REPLAN_DISTANCE_SQUARED = 9.0;
     private static final double WAYPOINT_REACHED_DISTANCE_SQUARED = 0.36;
     private static final double STUCK_PROGRESS_DISTANCE_SQUARED = 0.0225;
@@ -777,7 +784,9 @@ public final class CompanionManager {
      * side the companion is already approaching from.
      *
      * <p>Placing it on the far side instead would force the companion to walk around the mob to
-     * reach it, which looks clumsy and often loses the fight.</p>
+     * reach it, which looks clumsy and often loses the fight. When the spot itself cannot be
+     * stood on — the mob may be on a ledge — the mob's own block is used, which is always
+     * standable.</p>
      */
     private static Location meleeSpot(Mannequin npc, LivingEntity target) {
         Location targetLocation = target.getLocation();
@@ -791,10 +800,15 @@ public final class CompanionManager {
         }
         // Stop short of the target rather than beyond it.
         double scale = ATTACK_REACH / length;
-        return new Location(targetLocation.getWorld(),
+        Location spot = new Location(targetLocation.getWorld(),
                 targetLocation.getX() - dx * scale,
                 targetLocation.getY(),
                 targetLocation.getZ() - dz * scale);
+        if (!isFreeForCompanion(spot)) {
+            // The spot hangs in the air or inside a block; the mob's own block always works.
+            return targetLocation.clone();
+        }
+        return spot;
     }
 
     /**
@@ -957,10 +971,16 @@ public final class CompanionManager {
             double targetDistance = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
             // While fighting, "arrived" means being within melee reach of the mob itself, not
             // merely near the spot the companion aims for. Without this the companion would stop
-            // a block short and swing at nothing.
-            double combatDistance = attackTarget == null
-                    ? Double.MAX_VALUE
-                    : npcLocation.distance(attackTarget.getLocation());
+            // a block short and swing at nothing. The reach is measured horizontally, the way a
+            // player's own melee reach is, so a mob one block up or down still counts as in
+            // reach instead of making the companion stand there refusing to swing.
+            double combatDistance = Double.MAX_VALUE;
+            if (attackTarget != null) {
+                Location targetPosition = attackTarget.getLocation();
+                double reachDx = targetPosition.getX() - npcLocation.getX();
+                double reachDz = targetPosition.getZ() - npcLocation.getZ();
+                combatDistance = Math.sqrt(reachDx * reachDx + reachDz * reachDz);
+            }
             double arriveAt = attackTarget == null ? standStill : ATTACK_REACH + 0.2;
 
             // Emergency rescue on a vertical separation. When the owner stands on safe ground and
@@ -1012,13 +1032,17 @@ public final class CompanionManager {
                 return;
             }
 
-            boolean goalMoved = ownerMovedFromGoal(state, targetSpot);
+            boolean goalMoved = goalMovedFromPlan(state, targetSpot);
             boolean noPath = state.path.isEmpty();
             boolean retryFailedPlan = noPath && state.lastPlanTick != Long.MIN_VALUE
                     && currentTick - state.lastAttemptTick >= FAILED_PLAN_RETRY_TICKS;
+            // While fighting, the target keeps moving, so the route has to be refreshed far more
+            // often than the relaxed follow interval. Five seconds of stale route is far too slow
+            // for a melee chase.
+            long replanInterval = attackTarget == null ? REPLAN_INTERVAL_TICKS : COMBAT_REPLAN_INTERVAL_TICKS;
             boolean needsReplan = (noPath && (state.lastPlanTick == Long.MIN_VALUE || retryFailedPlan))
                     || (!noPath && (state.waypointIndex >= state.path.size()
-                    || currentTick - state.lastPlanTick >= REPLAN_INTERVAL_TICKS
+                    || currentTick - state.lastPlanTick >= replanInterval
                     || goalMoved));
 
             if (needsReplan) {
@@ -1288,13 +1312,21 @@ public final class CompanionManager {
         return closest;
     }
 
-    /** Whether the owner has moved far enough from the planned goal to justify a new route. */
-    private static boolean ownerMovedFromGoal(FollowState state, Location ownerLocation) {
+    /**
+     * Whether the target has moved far enough from the planned goal to justify a new route.
+     *
+     * <p>This compares the <b>goal</b> with the plan, not the owner with the plan. Comparing the
+     * owner was wrong: in melee the goal is a spot that follows the mob around, so it sat more
+     * than three blocks from the owner almost permanently. That made the companion replan on
+     * every tick, resetting the waypoint index each time, so it kept restarting the route from
+     * its first waypoint and never actually closed the distance.</p>
+     */
+    private static boolean goalMovedFromPlan(FollowState state, Location targetSpot) {
         if (state.plannedGoal == null) {
             return true;
         }
-        double dx = ownerLocation.getX() - state.plannedGoal.getX();
-        double dz = ownerLocation.getZ() - state.plannedGoal.getZ();
+        double dx = targetSpot.getX() - state.plannedGoal.getX();
+        double dz = targetSpot.getZ() - state.plannedGoal.getZ();
         return dx * dx + dz * dz >= GOAL_REPLAN_DISTANCE_SQUARED;
     }
 
