@@ -34,7 +34,9 @@ companion can hold the formation and still fight.
 - **It walks up to the mob and looks at it** while closing in, then keeps facing it while it
   strikes — so the fight reads like a player fighting, not like a turret.
 - **It swings like a player.** The arm animation is the player's own swing, played every
-  `attack-cooldown-ticks` ticks while within melee reach; the swing deals `attack-damage`.
+  `attack-cooldown-ticks` ticks while within the vanilla melee reach of 3 blocks; the swing deals
+  `attack-damage`. The companion closes to about 1.4 blocks and stops there, so it settles
+  instead of shoving into the mob, and it keeps its head on the target the whole way.
 - **It is never a target.** Any mob that would choose a companion is refused, so it keeps coming
   for you instead. A companion that had drawn aggro has it handed back to you on the next swing.
 - **Armed only while fighting.** The companion holds an iron sword while `/serang` is active and

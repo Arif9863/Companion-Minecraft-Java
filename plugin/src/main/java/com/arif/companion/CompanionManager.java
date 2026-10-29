@@ -195,11 +195,27 @@ public final class CompanionManager {
     /** How many sideways escape attempts a jammed companion gets before it pauses for replanning. */
     private static final int MAX_SIDE_STEP_ATTEMPTS = 2;
     /**
-     * How close the companion tries to get to its target before swinging.
+     * How close the companion aims to the mob when it is first assigned to fight.
      *
-     * <p>1.6 blocks, just inside a player's own melee reach.</p>
+     * <p>1.4 blocks — close, but not so close that A*'s block-centred waypoints put the
+     * companion inside the mob's collision box.</p>
      */
-    private static final double ATTACK_REACH = 1.6;
+    private static final double ATTACK_APPROACH_DISTANCE = 1.4;
+    /**
+     * Horizontal reach of the vanilla player melee attack in Minecraft 1.9+.
+     *
+     * <p>3.0 blocks in Survival. The mannequin has no built-in player controller, so we enforce
+     * the reach explicitly before applying its damage.</p>
+     */
+    private static final double ATTACK_REACH = 3.0;
+    /**
+     * Stop walking once within this distance, but only swing at {@link #ATTACK_REACH}.
+     *
+     * <p>This prevents a companion oscillating against a moving mob: it may settle slightly
+     * outside reach rather than continuously pushing into the mob, while the larger reach still
+     * lets it strike.</p>
+     */
+    private static final double ATTACK_STOP_DISTANCE = 2.8;
     /**
      * How long a mob keeps being hunted after it stopped being a valid target.
      *
@@ -796,10 +812,11 @@ public final class CompanionManager {
         double length = Math.sqrt(dx * dx + dz * dz);
         if (length < 0.05) {
             // Overlapping the target: step aside so the swing has room to happen.
-            return targetLocation.clone().add(ATTACK_REACH, 0, 0);
+            return targetLocation.clone().add(ATTACK_APPROACH_DISTANCE, 0, 0);
         }
-        // Stop short of the target rather than beyond it.
-        double scale = ATTACK_REACH / length;
+        // Stop short of the target rather than beyond it, so the companion walks up to the mob
+        // instead of having to walk around it.
+        double scale = ATTACK_APPROACH_DISTANCE / length;
         Location spot = new Location(targetLocation.getWorld(),
                 targetLocation.getX() - dx * scale,
                 targetLocation.getY(),
@@ -981,7 +998,7 @@ public final class CompanionManager {
                 double reachDz = targetPosition.getZ() - npcLocation.getZ();
                 combatDistance = Math.sqrt(reachDx * reachDx + reachDz * reachDz);
             }
-            double arriveAt = attackTarget == null ? standStill : ATTACK_REACH + 0.2;
+            double arriveAt = attackTarget == null ? standStill : ATTACK_STOP_DISTANCE;
 
             // Emergency rescue on a vertical separation. When the owner stands on safe ground and
             // the companion is far below, waiting for the usual 24-block radius is wrong: the
@@ -1011,31 +1028,45 @@ public final class CompanionManager {
             boolean moving = currentSpeed > STILL_SPEED;
             updateDoors(npcLocation, state, moving, targetDx, targetDz);
 
-            // Already in reach: damp motion and rest. In combat the companion still faces the
-            // target and swings on cooldown; otherwise it uses its normal idle gaze.
+            // While fighting, two independent distances apply. Resting is decided by the closer
+            // stop distance, but a swing is allowed at the full vanilla reach — otherwise a
+            // companion settled a whisker outside reach would stand there holding its sword and
+            // never strike. Outside combat the normal formation distance decides.
+            boolean inReach = attackTarget != null && combatDistance <= ATTACK_REACH;
+            if (inReach) {
+                // In reach: face the mob and swing on cooldown. The head stays on the target
+                // whether the companion is still closing in or already standing its ground.
+                float facing = yawToward(npcLocation, attackTarget.getLocation());
+                state.lastWalkingYaw = facing;
+                npc.setBodyYaw(facing);
+                npc.setRotation(facing, 0);
+                Location targetPosition = attackTarget.getLocation();
+                npc.lookAt(targetPosition.getX(),
+                        targetPosition.getY() + attackTarget.getHeight() * 0.85,
+                        targetPosition.getZ(), io.papermc.paper.entity.LookAnchor.EYES);
+            }
+
             if (attackTarget == null ? targetDistance <= standStill
                     : combatDistance <= arriveAt) {
                 org.bukkit.util.Vector velocity = npc.getVelocity();
                 npc.setVelocity(new org.bukkit.util.Vector(velocity.getX() * 0.35, velocity.getY(), velocity.getZ() * 0.35));
-                if (attackTarget != null) {
-                    float facing = yawToward(npc.getLocation(), attackTarget.getLocation());
-                    state.lastWalkingYaw = facing;
-                    npc.setBodyYaw(facing);
-                    npc.setRotation(facing, 0);
-                    npc.lookAt(attackTarget.getLocation().getX(),
-                            attackTarget.getLocation().getY() + attackTarget.getHeight() * 0.85,
-                            attackTarget.getLocation().getZ(), io.papermc.paper.entity.LookAnchor.EYES);
-                    swingAtTarget(npc, owner, attackTarget, state, currentTick);
-                } else {
+                if (attackTarget == null) {
                     applyGaze(npc, owner, state, state.lastWalkingYaw, true, true);
+                } else if (inReach) {
+                    // Standing its ground within reach: this is where the swing happens.
+                    swingAtTarget(npc, owner, attackTarget, state, currentTick);
                 }
                 return;
             }
 
             boolean goalMoved = goalMovedFromPlan(state, targetSpot);
             boolean noPath = state.path.isEmpty();
+            // A failed plan is retried quickly during a fight too. Waiting the normal full second
+            // while a mob is bearing down leaves the companion standing and watching.
+            long failedRetry = attackTarget == null
+                    ? FAILED_PLAN_RETRY_TICKS : COMBAT_REPLAN_INTERVAL_TICKS;
             boolean retryFailedPlan = noPath && state.lastPlanTick != Long.MIN_VALUE
-                    && currentTick - state.lastAttemptTick >= FAILED_PLAN_RETRY_TICKS;
+                    && currentTick - state.lastAttemptTick >= failedRetry;
             // While fighting, the target keeps moving, so the route has to be refreshed far more
             // often than the relaxed follow interval. Five seconds of stale route is far too slow
             // for a melee chase.
@@ -1161,14 +1192,14 @@ public final class CompanionManager {
             float yaw = (float) Math.toDegrees(Math.atan2(-vx, velocityZ));
             state.lastWalkingYaw = yaw;
             npc.setPose(org.bukkit.entity.Pose.STANDING, true);
-            // The body follows its waypoint while walking, except combat turns the head toward
-            // the mob the companion is approaching. In melee reach it stops first and then swings.
+            // The body stays on course; when combat is active the head tracks the target instead
+            // of glancing back at the owner. This keeps the companion visibly locked on while it
+            // closes the distance.
             if (attackTarget != null) {
-                float targetYaw = yawToward(npc.getLocation(), attackTarget.getLocation());
                 npc.setBodyYaw(yaw);
-                npc.lookAt(attackTarget.getLocation().getX(),
-                        attackTarget.getLocation().getY() + attackTarget.getHeight() * 0.85,
-                        attackTarget.getLocation().getZ(), io.papermc.paper.entity.LookAnchor.EYES);
+                Location targetPosition = attackTarget.getLocation();
+                npc.lookAt(targetPosition.getX(), targetPosition.getY() + attackTarget.getHeight() * 0.85,
+                        targetPosition.getZ(), io.papermc.paper.entity.LookAnchor.EYES);
             } else {
                 applyGaze(npc, owner, state, yaw, false, false);
             }
