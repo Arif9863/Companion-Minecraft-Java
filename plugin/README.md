@@ -16,10 +16,31 @@ This plugin spawns skin-bearing `Mannequin` entities, using only Paper's public 
 - `/sandrone-npc` (alias `/sandrone-chan`), `/sandrone-npc off` — same for Sandrone.
 - `/kesini [yui|sandrone|semua]` — switch the companions to **CLOSE** mode.
 - `/ikut [yui|sandrone|semua]` — switch them back to **FOLLOW** mode.
+- `/serang [yui|sandrone|semua]` — let the companions fight hostile mobs for you.
+- `/berhenti [yui|sandrone|semua]` — stand down again.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
 
 Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system.
+
+## Defensive melee (`/serang`)
+
+An independent toggle rather than a third mode, so it combines with either FOLLOW or CLOSE: a
+companion can hold the formation and still fight.
+
+- **Defensive only.** A companion engages a hostile mob only once that mob is coming for you or
+  for a companion, and only while it is within `attack-search-radius` blocks of you. A mob that is
+  merely standing nearby is ignored.
+- **It walks up to the mob and looks at it** while closing in, then keeps facing it while it
+  strikes — so the fight reads like a player fighting, not like a turret.
+- **It swings like a player.** The arm animation is the player's own swing, played every
+  `attack-cooldown-ticks` ticks while within melee reach; the swing deals `attack-damage`.
+- **It is never a target.** Any mob that would choose a companion is refused, so it keeps coming
+  for you instead. A companion that had drawn aggro has it handed back to you on the next swing.
+- **Armed only while fighting.** The companion holds an iron sword while `/serang` is active and
+  puts it away on `/berhenti`.
+- Combats take precedence over the formation spot: a companion leaves its side while chasing, and
+  returns as soon as the fight ends.
 
 ## Behaviour modes
 
@@ -72,6 +93,9 @@ Set `yui.skin-url` and/or `sandrone.skin-url` in `plugins/CompanionNPCs/config.y
 | `close-teleport-distance` | 24 | Emergency teleport radius in CLOSE mode (16–32) |
 | `idle-look-mob-radius` | 12 | How far an idle companion glances at a nearby mob (4–24) |
 | `idle-look-standstill-distance` | 6 | How far a still companion may glance at mobs (2–12) |
+| `attack-search-radius` | 8.0 | How far a hostile mob may be from you for a companion to defend you (2–16) |
+| `attack-damage` | 5.0 | Damage per melee swing (1–40) |
+| `attack-cooldown-ticks` | 16 | Ticks between two swings, 20 = one second (4–40) |
 | `pack-http-server` | true | Serve the resource pack over HTTP |
 | `pack-http-port` | 8765 | Port for that HTTP server |
 | `debug-self-test` | false | Spawn both NPCs at startup — test server only |

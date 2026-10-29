@@ -27,6 +27,14 @@ commands:
     description: Bring your companions back to the normal formation and distance
     usage: /ikut [yui|sandrone|semua]
     permission: companion.npc.close
+  serang:
+    description: Let your companions fight hostile mobs that attack you
+    usage: /serang [yui|sandrone|semua]
+    permission: companion.npc.attack
+  berhenti:
+    description: Tell your companions to stop fighting
+    usage: /berhenti [yui|sandrone|semua]
+    permission: companion.npc.attack
 permissions:
   companion.npc.yui:
     default: true
@@ -35,4 +43,6 @@ permissions:
   companion.npc.admin:
     default: op
   companion.npc.close:
+    default: true
+  companion.npc.attack:
     default: true

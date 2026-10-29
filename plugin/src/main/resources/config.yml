@@ -34,6 +34,14 @@ idle-look-mob-radius: 12
 # comfort distance it almost never ran outside of standing on top of the owner.
 idle-look-standstill-distance: 6
 
+# How far an owner-threatening hostile may be for the companion to defend them.
+# Currently fixed to an 8-block radius by the defensive attack behaviour.
+attack-search-radius: 8.0
+
+# Damage per melee swing in defensive attack mode.
+attack-damage: 5.0
+attack-cooldown-ticks: 16
+
 # Serve the companion resource pack over HTTP so other players download it automatically.
 # The URL to put into server.properties (resource-pack=...) is printed at startup.
 pack-http-server: true

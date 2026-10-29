@@ -34,6 +34,9 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private int idleLookRadius;
     private int idleLookStandstillDistance;
     private int packHttpPort;
+    private double attackSearchRadius;
+    private double attackDamage;
+    private long attackCooldownTicks;
 
     @Override
     public void onEnable() {
@@ -45,12 +48,14 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("sandrone-npc", new CompanionCommand("sandrone"));
         registerCommand("kesini", new ModeCommand(CompanionManager.FollowMode.CLOSE, "Kesini"));
         registerCommand("ikut", new ModeCommand(CompanionManager.FollowMode.FOLLOW, "Ikut"));
+        registerCommand("serang", new AttackCommand(true));
+        registerCommand("berhenti", new AttackCommand(false));
         registerCommand("companionnpc", new AdminCommand());
         Bukkit.getPluginManager().registerEvents(new CompanionListener(this), this);
 
         startPackServer();
 
-        getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /companionnpc");
+        getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /serang, /berhenti, /companionnpc");
         if (getConfig().getBoolean("debug-self-test", false)) {
             runSelfTest();
         }
@@ -124,6 +129,12 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         idleLookStandstillDistance = Math.max(2, Math.min(12, requestedIdleDist));
         // Pack HTTP server port (LAN file serving).
         packHttpPort = config.getInt("pack-http-port", 8765);
+        // How far a hostile mob may be from the owner before a companion defends them.
+        attackSearchRadius = Math.max(2.0, Math.min(16.0, config.getDouble("attack-search-radius", 8.0)));
+        // Damage per melee swing.
+        attackDamage = Math.max(1.0, Math.min(40.0, config.getDouble("attack-damage", 5.0)));
+        // Ticks between two swings (20 ticks = one second).
+        attackCooldownTicks = Math.max(4L, Math.min(40L, config.getLong("attack-cooldown-ticks", 16L)));
     }
 
     @Override
@@ -182,6 +193,21 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
      */
     int idleLookStandstillDistance() {
         return idleLookStandstillDistance;
+    }
+
+    /** How far an owner-threatening hostile may be for a companion to defend against. */
+    double attackSearchRadius() {
+        return attackSearchRadius;
+    }
+
+    /** Damage a companion's swing deals to a hostile mob. */
+    double attackDamage() {
+        return attackDamage;
+    }
+
+    /** Ticks between two melee swings. */
+    long attackCooldownTicks() {
+        return attackCooldownTicks;
     }
 
     /**
@@ -351,6 +377,55 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             } else {
                 player.sendMessage(Component.text("Mode " + label + " aktif untuk " + target
                         + ". Berlaku sampai kamu mengganti mode.", NamedTextColor.GREEN));
+            }
+            return true;
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+            if (args.length == 1) {
+                List<String> options = new ArrayList<>(List.of("yui", "sandrone", "semua"));
+                String prefix = args[0].toLowerCase(Locale.ROOT);
+                options.removeIf(option -> !option.startsWith(prefix));
+                return options;
+            }
+            return List.of();
+        }
+    }
+
+    /**
+     * The {@code /serang} and {@code /berhenti} pair: an independent toggle for melee combat that
+     * can be combined with either follow mode, so a companion can stay close and still fight.
+     */
+    private final class AttackCommand implements CommandExecutor, TabCompleter {
+        private final boolean enabled;
+
+        private AttackCommand(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String commandLabel, String[] args) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage(Component.text("This command can only be used by a player.", NamedTextColor.RED));
+                return true;
+            }
+            String target = args.length == 0 ? "semua" : args[0].toLowerCase(Locale.ROOT);
+            if (!target.equals("yui") && !target.equals("sandrone") && !target.equals("semua")) {
+                player.sendMessage(Component.text("Pilih siapa: /" + commandLabel
+                        + " [yui|sandrone|semua]", NamedTextColor.YELLOW));
+                return true;
+            }
+            int changed = manager.setAttacking(player, target, enabled);
+            if (changed == 0) {
+                player.sendMessage(Component.text("Tidak ada pendamping yang bisa diubah."
+                        + " Panggil dengan /yui-npc atau /sandrone-npc dulu.", NamedTextColor.YELLOW));
+            } else if (enabled) {
+                player.sendMessage(Component.text("Siap bertarung untuk " + target
+                        + ". Mereka menyerang mob yang menyerangmu.", NamedTextColor.GREEN));
+            } else {
+                player.sendMessage(Component.text("Tidak menyerang untuk " + target
+                        + ". Pedang disingkirkan.", NamedTextColor.GREEN));
             }
             return true;
         }

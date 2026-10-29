@@ -15,6 +15,8 @@ import org.bukkit.block.data.Openable;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.EntityType;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
 import org.bukkit.profile.PlayerTextures;
@@ -185,6 +187,19 @@ public final class CompanionManager {
     private static final double CLOSE_TARGET_MAX_DISTANCE = 2.5;
     /** How many sideways escape attempts a jammed companion gets before it pauses for replanning. */
     private static final int MAX_SIDE_STEP_ATTEMPTS = 2;
+    /**
+     * How close the companion tries to get to its target before swinging.
+     *
+     * <p>1.6 blocks, just inside a player's own melee reach.</p>
+     */
+    private static final double ATTACK_REACH = 1.6;
+    /**
+     * How long a mob keeps being hunted after it stopped being a valid target.
+     *
+     * <p>60 ticks (3 seconds). Without this a mob that steps out of range would make the companion
+     * turn back and forth at the edge of the search radius.</p>
+     */
+    private static final long ATTACK_TARGET_GRACE_TICKS = 60L;
 
     private static final class FollowState {
         private List<org.bukkit.util.Vector> path = List.of();
@@ -215,6 +230,14 @@ public final class CompanionManager {
         private int sideStepAttempts;
         /** The standing behaviour of this companion: follow in formation, or stay close. */
         private FollowMode mode = FollowMode.FOLLOW;
+        /** Whether this companion is allowed to attack hostile mobs near the owner. */
+        private boolean attackEnabled;
+        /** The mob this companion is currently engaging, or null when none. */
+        private UUID attackTarget;
+        /** Tick at which the current attack target was picked, used for the grace period. */
+        private long attackTargetTick = Long.MIN_VALUE;
+        /** Tick of the last swing, used to space the melee hits out. */
+        private long lastSwingTick = Long.MIN_VALUE;
         /** Shared close-mode target selected from a reachable, unblocked nearby spot. */
         private Location closeTarget;
         /** Tick at which the close target was last recomputed. */
@@ -643,6 +666,166 @@ public final class CompanionManager {
     }
 
     /**
+     * Finds the mob this companion should be fighting.
+     *
+     * <p>Only hostile mobs that are actually a threat qualify: either they are already coming for
+     * the owner, or they are already coming for this companion. A mob that is merely standing
+     * nearby is ignored, so the companion does not go on the offensive. The search radius is
+     * configurable (8 blocks by default), so the owner is never left undefended for a distant fight.</p>
+     *
+     * @return the mob to engage, or null when there is nothing to fight
+     */
+    private LivingEntity findAttackTarget(Mannequin npc, Player owner, FollowState state) {
+        Location ownerLocation = owner.getLocation();
+        double radius = plugin.attackSearchRadius();
+        double radiusSquared = radius * radius;
+        LivingEntity best = null;
+        double bestDistance = radiusSquared;
+
+        for (Entity entity : owner.getNearbyEntities(radius, radius, radius)) {
+            if (!(entity instanceof LivingEntity living) || !isHostileMob(living)) {
+                continue;
+            }
+            if (!living.isValid() || living.isDead()) {
+                continue;
+            }
+            // A mob that is already coming for the owner or for this companion is a threat.
+            if (!isThreatToParty(living, owner, npc)) {
+                continue;
+            }
+            double distance = living.getLocation().distanceSquared(ownerLocation);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = living;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Whether the mob counts as hostile. Only the undead and the classic cave dwellers qualify;
+     * animals, villagers and other peaceful creatures are never attacked.
+     */
+    private static boolean isHostileMob(LivingEntity entity) {
+        if (entity instanceof org.bukkit.entity.Monster) {
+            return true;
+        }
+        EntityType type = entity.getType();
+        return type == EntityType.CREEPER || type == EntityType.SLIME
+                || type == EntityType.WITHER_SKELETON || type == EntityType.GHAST
+                || type == EntityType.PHANTOM || type == EntityType.PILLAGER
+                || type == EntityType.VINDICATOR || type == EntityType.EVOKER
+                || type == EntityType.ILLUSIONER || type == EntityType.RAVAGER
+                || type == EntityType.SHULKER;
+    }
+
+    /**
+     * Whether the mob is actively coming for the owner or for a companion.
+     *
+     * <p>A mob whose target is the owner, or one of the owner's companions, is a threat. A mob
+     * that targets something else — or nothing at all — is left alone.</p>
+     */
+    private static boolean isThreatToParty(LivingEntity mob, Player owner, Mannequin npc) {
+        if (!(mob instanceof org.bukkit.entity.Mob hostile)) {
+            return false;
+        }
+        LivingEntity target = hostile.getTarget();
+        if (target == null) {
+            return false;
+        }
+        if (target.getUniqueId().equals(owner.getUniqueId())) {
+            return true;
+        }
+        if (target instanceof Mannequin companion) {
+            return companion.getScoreboardTags().contains(TAG);
+        }
+        return false;
+    }
+
+    /**
+     * Picks the mob this companion fights, keeping the current target while it is still valid.
+     *
+     * <p>The current target is kept for a short grace period so the companion does not drop a mob
+     * that stepped one block out of reach, and re-picks when the mob dies or the grace expires.</p>
+     */
+    private LivingEntity resolveAttackTarget(Mannequin npc, Player owner, FollowState state,
+                                             long currentTick) {
+        if (state.attackTarget != null) {
+            Entity existing = Bukkit.getEntity(state.attackTarget);
+            // The grace check is skipped on the very first pick, because subtracting the
+            // never-set sentinel from the tick would overflow to a negative number.
+            boolean withinGrace = state.attackTargetTick == Long.MIN_VALUE
+                    || currentTick - state.attackTargetTick <= ATTACK_TARGET_GRACE_TICKS;
+            if (withinGrace && existing instanceof LivingEntity living
+                    && living.isValid() && !living.isDead()) {
+                return living;
+            }
+        }
+        LivingEntity found = findAttackTarget(npc, owner, state);
+        if (found == null) {
+            state.attackTarget = null;
+            state.attackTargetTick = Long.MIN_VALUE;
+            return null;
+        }
+        state.attackTarget = found.getUniqueId();
+        state.attackTargetTick = currentTick;
+        return found;
+    }
+
+    /**
+     * The spot the companion walks to in order to strike its target: within melee reach, on the
+     * side the companion is already approaching from.
+     *
+     * <p>Placing it on the far side instead would force the companion to walk around the mob to
+     * reach it, which looks clumsy and often loses the fight.</p>
+     */
+    private static Location meleeSpot(Mannequin npc, LivingEntity target) {
+        Location targetLocation = target.getLocation();
+        Location npcLocation = npc.getLocation();
+        double dx = targetLocation.getX() - npcLocation.getX();
+        double dz = targetLocation.getZ() - npcLocation.getZ();
+        double length = Math.sqrt(dx * dx + dz * dz);
+        if (length < 0.05) {
+            // Overlapping the target: step aside so the swing has room to happen.
+            return targetLocation.clone().add(ATTACK_REACH, 0, 0);
+        }
+        // Stop short of the target rather than beyond it.
+        double scale = ATTACK_REACH / length;
+        return new Location(targetLocation.getWorld(),
+                targetLocation.getX() - dx * scale,
+                targetLocation.getY(),
+                targetLocation.getZ() - dz * scale);
+    }
+
+    /**
+     * Swings at the target: the companion's arm animates like a player's, and the mob takes the
+     * damage. A mob that had the companion as its target is released first, so it stops hitting
+     * an immortal companion and looks for the owner again.
+     */
+    private void swingAtTarget(Mannequin npc, Player owner, LivingEntity target,
+                                FollowState state, long currentTick) {
+        // A never-swing companion starts at Long.MIN_VALUE; subtracting that from the tick would
+        // overflow to a negative number and permanently satisfy the cooldown, so the first swing
+        // has to be allowed through explicitly.
+        boolean firstSwing = state.lastSwingTick == Long.MIN_VALUE;
+        if (!firstSwing && currentTick - state.lastSwingTick < plugin.attackCooldownTicks()) {
+            return;
+        }
+        state.lastSwingTick = currentTick;
+
+        // The swing animation is a player's own, so the hit reads like a real melee attack.
+        npc.swingMainHand();
+        // Take the mob's attention off the companion: an immortal target would otherwise keep
+        // the mob busy forever instead of letting it return to the owner.
+        if (target instanceof org.bukkit.entity.Mob hostile
+                && hostile.getTarget() instanceof Mannequin companion
+                && companion.getScoreboardTags().contains(TAG)) {
+            hostile.setTarget(owner);
+        }
+        target.damage(plugin.attackDamage(), npc);
+    }
+
+    /**
      * Whether the given spot lies inside the area the owner can walk to.
      *
      * <p>An empty footprint means the check cannot be made — the owner's own block is then used
@@ -654,6 +837,16 @@ public final class CompanionManager {
         }
         return footprint.contains(new PathPlanner.BlockPos(
                 location.getBlockX(), location.getBlockY(), location.getBlockZ()));
+    }
+
+    /** Returns the yaw that points from one location towards another. */
+    private static float yawToward(Location from, Location to) {
+        double dx = to.getX() - from.getX();
+        double dz = to.getZ() - from.getZ();
+        if (dx * dx + dz * dz < 1.0E-6) {
+            return from.getYaw();
+        }
+        return (float) Math.toDegrees(Math.atan2(-dx, dz));
     }
 
     /** Returns the spot 1.2 blocks to the owner's left/right, relative to a fixed formation yaw. */
@@ -748,10 +941,27 @@ public final class CompanionManager {
             // The companion heads for its own spot in the formation, not for the owner directly.
             // In CLOSE mode formationSpot picks a point within the owner's reachable room.
             Location targetSpot = formationSpot(npc, owner, state, closeMode);
+            long currentTick = Bukkit.getCurrentTick();
+
+            // Combat overrides the formation while it is active: the companion walks to the mob
+            // instead of holding its side, and looks at what it is fighting.
+            LivingEntity attackTarget = null;
+            if (state.attackEnabled) {
+                attackTarget = resolveAttackTarget(npc, owner, state, currentTick);
+                if (attackTarget != null) {
+                    targetSpot = meleeSpot(npc, attackTarget);
+                }
+            }
             double targetDx = targetSpot.getX() - npcLocation.getX();
             double targetDz = targetSpot.getZ() - npcLocation.getZ();
             double targetDistance = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
-            long currentTick = Bukkit.getCurrentTick();
+            // While fighting, "arrived" means being within melee reach of the mob itself, not
+            // merely near the spot the companion aims for. Without this the companion would stop
+            // a block short and swing at nothing.
+            double combatDistance = attackTarget == null
+                    ? Double.MAX_VALUE
+                    : npcLocation.distance(attackTarget.getLocation());
+            double arriveAt = attackTarget == null ? standStill : ATTACK_REACH + 0.2;
 
             // Emergency rescue on a vertical separation. When the owner stands on safe ground and
             // the companion is far below, waiting for the usual 24-block radius is wrong: the
@@ -781,12 +991,24 @@ public final class CompanionManager {
             boolean moving = currentSpeed > STILL_SPEED;
             updateDoors(npcLocation, state, moving, targetDx, targetDz);
 
-            // Already on the formation spot: damp motion and rest, with a natural idle gaze
-            // instead of copying the owner's view direction.
-            if (targetDistance <= standStill) {
+            // Already in reach: damp motion and rest. In combat the companion still faces the
+            // target and swings on cooldown; otherwise it uses its normal idle gaze.
+            if (attackTarget == null ? targetDistance <= standStill
+                    : combatDistance <= arriveAt) {
                 org.bukkit.util.Vector velocity = npc.getVelocity();
                 npc.setVelocity(new org.bukkit.util.Vector(velocity.getX() * 0.35, velocity.getY(), velocity.getZ() * 0.35));
-                applyGaze(npc, owner, state, state.lastWalkingYaw, true, true);
+                if (attackTarget != null) {
+                    float facing = yawToward(npc.getLocation(), attackTarget.getLocation());
+                    state.lastWalkingYaw = facing;
+                    npc.setBodyYaw(facing);
+                    npc.setRotation(facing, 0);
+                    npc.lookAt(attackTarget.getLocation().getX(),
+                            attackTarget.getLocation().getY() + attackTarget.getHeight() * 0.85,
+                            attackTarget.getLocation().getZ(), io.papermc.paper.entity.LookAnchor.EYES);
+                    swingAtTarget(npc, owner, attackTarget, state, currentTick);
+                } else {
+                    applyGaze(npc, owner, state, state.lastWalkingYaw, true, true);
+                }
                 return;
             }
 
@@ -915,10 +1137,17 @@ public final class CompanionManager {
             float yaw = (float) Math.toDegrees(Math.atan2(-vx, velocityZ));
             state.lastWalkingYaw = yaw;
             npc.setPose(org.bukkit.entity.Pose.STANDING, true);
-            // The body keeps pointing where it walks; the head may glance at a nearby mob.
-            // Glancing must never interrupt the walk, so this replaces the old setRotation call
-            // instead of returning early.
-            applyGaze(npc, owner, state, yaw, false, false);
+            // The body follows its waypoint while walking, except combat turns the head toward
+            // the mob the companion is approaching. In melee reach it stops first and then swings.
+            if (attackTarget != null) {
+                float targetYaw = yawToward(npc.getLocation(), attackTarget.getLocation());
+                npc.setBodyYaw(yaw);
+                npc.lookAt(attackTarget.getLocation().getX(),
+                        attackTarget.getLocation().getY() + attackTarget.getHeight() * 0.85,
+                        attackTarget.getLocation().getZ(), io.papermc.paper.entity.LookAnchor.EYES);
+            } else {
+                applyGaze(npc, owner, state, yaw, false, false);
+            }
         }, 1L, 1L);
         followTasks.put(key, task);
     }
@@ -1465,6 +1694,63 @@ public final class CompanionManager {
     /** Teleport catch-up distance for the given standing mode. */
     private int emergencyTeleportDistance(FollowMode mode) {
         return mode == FollowMode.CLOSE ? plugin.closeTeleportDistance() : plugin.teleportDistance();
+    }
+
+    /**
+     * Turns the companions' melee behaviour on or off.
+     *
+     * <p>This is a separate toggle rather than a third mode, so it can be combined with either
+     * FOLLOW or CLOSE: a companion can stay close to the owner and still fight.</p>
+     *
+     * @param archetype "yui", "sandrone", or "semua" for both
+     * @param enabled   true to let the companions fight, false to hold fire
+     * @return how many companions were actually changed
+     */
+    public int setAttacking(Player owner, String archetype, boolean enabled) {
+        int changed = 0;
+        for (Map.Entry<CompanionKey, FollowState> entry : followStates.entrySet()) {
+            CompanionKey key = entry.getKey();
+            if (!key.ownerId().equals(owner.getUniqueId())) {
+                continue;
+            }
+            if (!archetype.equalsIgnoreCase("semua") && !archetype.equalsIgnoreCase(key.archetype())) {
+                continue;
+            }
+            FollowState state = entry.getValue();
+            state.attackEnabled = enabled;
+            if (!enabled) {
+                state.attackTarget = null;
+                state.attackTargetTick = Long.MIN_VALUE;
+                state.lastSwingTick = Long.MIN_VALUE;
+                // Drop the sword again and let the companion resume its formation spot.
+                state.path = List.of();
+                state.plannedGoal = null;
+                state.lastPlanTick = Long.MIN_VALUE;
+            }
+            UUID npcId = ownerToNpc.get(key);
+            Entity npc = npcId == null ? null : Bukkit.getEntity(npcId);
+            if (npc instanceof Mannequin mannequin) {
+                setSword(mannequin, enabled);
+            }
+            changed++;
+        }
+        return changed;
+    }
+
+    /**
+     * Puts an iron sword in the companion's hand while it is fighting, and takes it away again.
+     *
+     * <p>The mannequin cannot wield a weapon the way a player does, so the sword is decoration:
+     * it tells other players at a glance that the companion is armed and dangerous.</p>
+     */
+    private static void setSword(Mannequin npc, boolean armed) {
+        org.bukkit.inventory.EntityEquipment equipment = npc.getEquipment();
+        if (equipment == null) {
+            return;
+        }
+        equipment.setItemInMainHand(armed
+                ? new org.bukkit.inventory.ItemStack(Material.IRON_SWORD)
+                : null);
     }
 
     /** Teleports the companion to its mode-specific target, closing its doors and resetting route state. */
