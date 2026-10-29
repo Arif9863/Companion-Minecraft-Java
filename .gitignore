@@ -55,6 +55,7 @@ Paper/Paper26.3/plugins/Skript/scripts/-- Files prefixed with a hyphen are disab
 plugin/target/
 plugin/build/classes/
 plugin/build/stub-classes/
+plugin/build/*.jar
 *.class
 
 # ===== Editor / OS =====
