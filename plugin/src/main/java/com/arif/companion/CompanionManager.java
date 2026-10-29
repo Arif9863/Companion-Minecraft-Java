@@ -1163,6 +1163,10 @@ public final class CompanionManager {
             }
 
             double speed = horizontalDistance > 5.0 ? 0.24 : 0.14;
+            if (attackTarget != null) {
+                // Sprint into melee range 1.5x faster, but only while actually chasing a hostile.
+                speed *= 1.5;
+            }
             double vx = (wx / waypointDistance) * speed;
             double velocityZ = (wz / waypointDistance) * speed;
 
