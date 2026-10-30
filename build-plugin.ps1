@@ -84,7 +84,9 @@ function Find-ServerDir {
         if (Test-Path $ServerDir) { return (Resolve-Path $ServerDir).Path }
         throw "ServerDir tidak ada: $ServerDir"
     }
-    # Cari folder yang punya libraries/io/papermc/paper/paper-api
+    # Cari folder server Paper yang sah. Penandanya eula.txt atau bukkit.yml, bukan
+    # folder libraries: pada clone murni libraries belum ada (paper.jar membuatnya
+    # saat pertama jalan), padahal folder server dan plugins-nya sudah ada.
     $candidates = @()
     $paperRoot = Join-Path $Root 'Paper'
     if (Test-Path $paperRoot) {
@@ -93,8 +95,11 @@ function Find-ServerDir {
     $candidates += @(Get-ChildItem $Root -Directory -ErrorAction SilentlyContinue)
 
     foreach ($candidate in $candidates) {
-        $apiDir = Join-Path $candidate.FullName 'libraries\io\papermc\paper\paper-api'
-        if (Test-Path $apiDir) { return $candidate.FullName }
+        $hasEula = Test-Path (Join-Path $candidate.FullName 'eula.txt')
+        $hasBukkit = Test-Path (Join-Path $candidate.FullName 'bukkit.yml')
+        if ($hasEula -or $hasBukkit) {
+            return $candidate.FullName
+        }
     }
     return $null
 }
@@ -212,7 +217,21 @@ function Build-WithMaven {
 }
 
 if (-not (Build-WithJavac -ServerPath $server)) {
-    Build-WithMaven | Out-Null
+    # Folder library Paper tidak ada (clone murni) dan Maven tidak terpasang.
+    # Kalau JAR hasil build sudah ikut ter-clone, pakai itu — jalur tercepat untuk
+    # server yang hanya menjalankan, bukan mengembangkan.
+    if (Test-Path $jarOut) {
+        $newestSource = Get-ChildItem $src -Recurse -Filter '*.java' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($newestSource -and $newestSource.LastWriteTime -gt (Get-Item $jarOut).LastWriteTime) {
+            Write-Host ('  PERHATIAN: ada file Java lebih baru dari JAR (' + $newestSource.Name + ')') -ForegroundColor Yellow
+            Write-Host '  JAR yang sudah ada tetap dipakai. Build ulang di mesin yang punya folder library.' -ForegroundColor Yellow
+        } else {
+            Write-Host '  pakai JAR hasil build yang sudah ikut ter-clone' -ForegroundColor Yellow
+        }
+    } else {
+        Build-WithMaven | Out-Null
+    }
 }
 
 if (-not (Test-Path $jarOut)) { throw 'JAR tidak terbentuk' }

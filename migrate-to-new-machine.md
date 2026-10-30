@@ -7,6 +7,7 @@ hanya untuk menjalankan server.
 ## Apa yang sudah ada di GitHub (otomatis ikut clone)
 
 - Source plugin CompanionNPCs (`plugin/src/main/java`, `plugin/src/main/resources`)
+- JAR plugin hasil build: `plugin/build/companion-npcs-1.0.0.jar` — siap dipasang tanpa kompilasi
 - Dua skrip Skript companion (`yui_companion.sk`, `sandrone_companion.sk`)
 - 30 file suara `.ogg` (`resource-pack-source/`)
 - Skin Yui & Sandrone + `pack.mcmeta`
@@ -19,7 +20,6 @@ hanya untuk menjalankan server.
 | `paper.jar` | Binari server, 55 MB |
 | `server.properties` | Berisi secret, sengaja tidak di-commit |
 | `plugins/Skript-2.17.1.jar` | Plugin pihak ketiga |
-| `plugins/companion-npcs-1.0.0.jar` | Hasil build, dibangun ulang di PC baru |
 | `plugins/Skript/config.sk` | Setelan suara & namespace |
 | `plugins/Skript/features.sk` | Setelan fitur Skript |
 | `plugins/CompanionNPCs/config.yml` | Dihasilkan otomatis saat server pertama jalan |
@@ -47,15 +47,20 @@ plugins/Skript/features.sk             -> Paper/Paper26.3/plugins/Skript/
 
 `libraries/` (74 MB) tidak perlu disalin: Paper mengunduhnya sendiri saat pertama jalan.
 
-### 3. Build plugin di PC baru
+### 3. Pasang plugin Companion di PC baru
 
 ```bash
 powershell -NoProfile -ExecutionPolicy Bypass -File ./build-plugin.ps1
 ```
 
-Script mencari JDK sendiri, menemukan folder server otomatis, dan menyalin JAR ke
-`Paper/Paper26.3/plugins/`. Kalau `mvn` terpasang dan folder server tidak ditemukan,
-script otomatis pakai `mvn package`.
+Skrip ini menyalin JAR ke `Paper/Paper26.3/plugins/`. Kalau folder `libraries/`
+Paper belum ada (kondisi normal pada clone murni) dan Maven tidak terpasang, skrip
+tidak mengompilasi — ia **memakai JAR yang sudah ikut ter-clone** lalu menyalinnya.
+Begitu `libraries/` sudah tersedia, skrip kembali mengompilasi source langsung.
+
+**Penting:** JAR di Git hanya ikut ter-update bila kamu membangun dan meng-commit
+di PC lama. Setiap kali mengubah source Java, jalankan `build-plugin.ps1`, lalu
+`git add` + `commit` + `push` — termasuk `plugin/build/companion-npcs-1.0.0.jar`.
 
 ### 4. Bangun resource pack di PC baru
 
