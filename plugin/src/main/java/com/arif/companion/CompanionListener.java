@@ -9,7 +9,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -30,16 +29,11 @@ public final class CompanionListener implements Listener {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
-        saveOpenBag(event.getPlayer());
         plugin.getManager().despawn(event.getPlayer());
     }
 
     /**
-     * Retires the obsolete "Panel Pendamping" paper from older builds.
-     *
-     * <p>The mannequin replaced the item, so a leftover copy would sit in the backpack doing
-     * nothing. It is removed by its hidden tag only — never by material or name — so nothing
-     * else a player owns is touched.</p>
+     * Retires the old tagged paper control item without touching ordinary player items.
      */
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
@@ -70,36 +64,24 @@ public final class CompanionListener implements Listener {
         }
     }
 
-    /** Persist a bag even if the player disconnects while its inventory is open. */
-    void saveOpenBag(Player player) {
-        Inventory top = player.getOpenInventory().getTopInventory();
-        if (top.getHolder() instanceof YuiStorage.YuiStorageView view
-                && view.ownerId().equals(player.getUniqueId())) {
-            plugin.getStorage().save(view.ownerId(), top.getContents());
-        }
-    }
-
     /**
-     * Clicking a tagged mannequin opens the menu, but only when it is the player's own Yui.
-     *
-     * <p>Every other interaction with a companion is refused: the mannequin is not a trade
-     * partner, a nametag target or anything else a right-click could normally do.</p>
+     * Prevents vanilla actions on companions. Only the owner's Yui gets the choice menu.
      */
     @EventHandler
     public void onCompanionInteract(PlayerInteractEntityEvent event) {
-        if (event.getHand() != EquipmentSlot.HAND) {
-            return;
-        }
-        if (!(event.getRightClicked() instanceof Mannequin mannequin)
-                || !mannequin.getScoreboardTags().contains(CompanionManager.TAG)) {
-            return;
-        }
-        event.setCancelled(true);
-        if (!mannequin.getScoreboardTags().contains("companion_yui")
+        if (event.getHand() != EquipmentSlot.HAND
+                || !(event.getRightClicked() instanceof Mannequin mannequin)
+                || !mannequin.getScoreboardTags().contains(CompanionManager.TAG)
+                || !mannequin.getScoreboardTags().contains("companion_yui")
                 || !plugin.getManager().isOwnedBy(event.getPlayer(), mannequin.getUniqueId())) {
             return;
         }
-        YuiInteractionMenu.open(plugin, event.getPlayer());
+        event.setCancelled(true);
+        Player owner = event.getPlayer();
+        // Open on the next tick so legacy Skript listeners cannot replace the choice menu with
+        // their old direct-to-bag inventory.
+        plugin.getServer().getScheduler().runTask(plugin,
+                () -> YuiInteractionMenu.open(plugin, owner));
     }
 
     /**
@@ -142,19 +124,9 @@ public final class CompanionListener implements Listener {
         }
     }
 
-    /** Private bag contents can only be used by its owner. */
-    @EventHandler
-    public void onStorageClick(InventoryClickEvent event) {
-        if (!(event.getView().getTopInventory().getHolder() instanceof YuiStorage.YuiStorageView view)) {
-            return;
-        }
-        if (!view.ownerId().equals(event.getWhoClicked().getUniqueId())) {
-            event.setCancelled(true);
-            event.getWhoClicked().closeInventory();
-        }
-    }
-
-    /** Keep decorative menu slots immutable without blocking normal storage interactions. */
+    /**
+     * Keeps the player from placing items in the decorative menu panes.
+     */
     @EventHandler
     public void onMenuDrag(InventoryDragEvent event) {
         if (event.getView().getTopInventory().getHolder() instanceof YuiInteractionMenu
@@ -166,18 +138,6 @@ public final class CompanionListener implements Listener {
                     return;
                 }
             }
-        }
-        if (event.getView().getTopInventory().getHolder() instanceof YuiStorage.YuiStorageView view
-                && !view.ownerId().equals(event.getWhoClicked().getUniqueId())) {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler
-    public void onStorageClose(InventoryCloseEvent event) {
-        if (event.getView().getTopInventory().getHolder() instanceof YuiStorage.YuiStorageView view
-                && view.ownerId().equals(event.getPlayer().getUniqueId())) {
-            plugin.getStorage().save(view.ownerId(), event.getView().getTopInventory().getContents());
         }
     }
 }

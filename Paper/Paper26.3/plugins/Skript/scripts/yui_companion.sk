@@ -389,6 +389,7 @@ every {@heal_interval}:
                         set {-yuifu::%loop-player's uuid%} to {@followup_delay}
 
 on quit:
+    dv_storage_save(player)
     delete {-yui-active::%player's uuid%}
     delete {-yuifu::%player's uuid%}
     delete {-yuimsg::%player's uuid%}
@@ -402,24 +403,14 @@ on quit:
     delete {-voice::last::%player's uuid%}
 
 # ==== Kantong Yui ====
-on rightclick on a mannequin:
-    set {_ok} to false
-    if scoreboard tags of clicked entity contains "companion_yui":
-        if {-yui-active::%player's uuid%} is true:
-            set {_ok} to true
-    if {_ok} is false:
-        stop trigger
-    cancel event
-    # Kunci pemilik: hanya pemilik NPC ini yang boleh membuka kantongnya.
-    set {_nid} to uuid of clicked entity
-    if {-dv::owner::%{_nid}%} is not player's uuid:
-        broadcast "&d[Yui] Hati dan kasih Yui hanya untuk Arif"
-        play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
-        stop trigger
-    dv_storage_open(player, "yui")
+# Uses the existing persistent Skript storage variables, preserving all saved items.
+command /yuibag:
+    description: Buka Kantong Yui
+    trigger:
+        if {-yui-active::%player's uuid%} is not true:
+            send "&cPanggil Yui terlebih dahulu dengan /yui."
+            stop
+        dv_storage_open(player, "yui")
 
 on inventory close:
-    dv_storage_save(player)
-
-on quit:
     dv_storage_save(player)

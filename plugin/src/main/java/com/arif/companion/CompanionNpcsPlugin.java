@@ -26,7 +26,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private CompanionManager manager;
     private CompanionListener listener;
     private PackHttpServer packServer;
-    private YuiStorage storage;
     private String yuiSkinUrl;
     private String sandroneSkinUrl;
     private double comfortDistance;
@@ -47,7 +46,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         saveDefaultConfig();
         readConfig();
         manager = new CompanionManager(this);
-        storage = new YuiStorage(this);
 
         registerCommand("yui-npc", new CompanionCommand("yui"));
         registerCommand("sandrone-npc", new CompanionCommand("sandrone"));
@@ -156,24 +154,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         if (manager != null) {
             manager.despawnEverything();
         }
-        if (storage != null) {
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                if (listener != null) {
-                    listener.saveOpenBag(player);
-                }
-            }
-            storage.saveAll();
-            storage = null;
-        }
         listener = null;
     }
 
     public CompanionManager getManager() {
         return manager;
-    }
-
-    YuiStorage getStorage() {
-        return storage;
     }
 
     String skinUrl(String archetype) {

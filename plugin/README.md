@@ -56,8 +56,9 @@ Right-click your own Yui mannequin to open her menu. It offers two choices:
   controls, plus a target selector that cycles **Keduanya** → **Yui** → **Sandrone**. Companion cards
   show each one's current mode and combat state. It calls the same manager methods as the commands,
   so command use and menu state stay in sync.
-- **Kantong Yui** — a private 27-slot bag. Contents are saved per player in
-  `plugins/CompanionNPCs/yui-storage.yml` and survive a restart. Other players cannot open it.
+- **Kantong Yui** — opens Yui's private 27-slot Skript-backed bag. It uses the existing persistent
+  `companion::storage` data in `Paper/Paper26.3/plugins/Skript/variables.csv`; existing contents
+  are preserved and continue to save on inventory close and logout. Other players cannot open it.
 
 There is no separate control item: the mannequin itself is the key. Other right-click interactions
 with any companion (nametag, trade, use) are refused so they never trigger a vanilla action.

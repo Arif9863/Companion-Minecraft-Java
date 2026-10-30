@@ -69,7 +69,7 @@ final class YuiInteractionMenu implements InventoryHolder {
                 return;
             }
             plugin.getServer().getScheduler().runTask(plugin,
-                    () -> plugin.getStorage().open(player));
+                    () -> player.performCommand("yuibag"));
         }
     }
 
@@ -88,25 +88,5 @@ final class YuiInteractionMenu implements InventoryHolder {
         }
         item.setItemMeta(meta);
         return item;
-    }
-}
-
-/** A live view of one owner's persisted 27-slot bag. */
-final class YuiStorageView implements InventoryHolder {
-    private final java.util.UUID ownerId;
-    private final Inventory inventory;
-
-    YuiStorageView(java.util.UUID ownerId) {
-        this.ownerId = ownerId;
-        this.inventory = Bukkit.createInventory(this, YuiStorage.SIZE, Component.text("Kantong Yui"));
-    }
-
-    java.util.UUID ownerId() {
-        return ownerId;
-    }
-
-    @Override
-    public Inventory getInventory() {
-        return inventory;
     }
 }
