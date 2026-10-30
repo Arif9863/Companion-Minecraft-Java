@@ -8,6 +8,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
+import org.bukkit.Sound;
+import org.bukkit.SoundCategory;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -155,6 +157,10 @@ public final class CompanionManager {
     private static final long GLANCE_CHECK_INTERVAL_TICKS = 60L;
     /** Movement speed below which the companion counts as standing still. */
     private static final double STILL_SPEED = 0.02;
+    /** Minimum horizontal movement before a block-based footstep can play. */
+    private static final double FOOTSTEP_SPEED = 0.055;
+    /** Footstep cadence while running, in server ticks (20 ticks = 1 second). */
+    private static final long FOOTSTEP_INTERVAL_TICKS = 9L;
     /** How far beside the owner a companion appears when summoned or rescued. */
     private static final double SIDE_PLACEMENT_DISTANCE = 1.2;
     /** How far to the owner's left or right a companion stands while following. */
@@ -275,6 +281,10 @@ public final class CompanionManager {
         private long attackTargetTick = Long.MIN_VALUE;
         /** Tick of the last swing, used to space the melee hits out. */
         private long lastSwingTick = Long.MIN_VALUE;
+        /** Tick of the last ground footstep sound. */
+        private long lastFootstepTick = Long.MIN_VALUE;
+        /** Whether the mannequin's current pose is swimming, to avoid redundant pose writes. */
+        private boolean swimmingPose;
         /** Shared close-mode target selected from a reachable, unblocked nearby spot. */
         private Location closeTarget;
         /** Tick at which the close target was last recomputed. */
@@ -1035,6 +1045,9 @@ public final class CompanionManager {
 
             Location npcLocation = npc.getLocation();
             Location ownerLocation = owner.getLocation();
+            // Keep the pose in sync even in the branches that stand still, so a companion that
+            // stops moving right after leaving water does not stay stuck in the swim pose.
+            updateMovementPose(npc, state, isInWater(npc, npcLocation));
             // Anchor the formation to actual player movement, not head/camera yaw. A camera-only
             // look-around must never send a companion to the opposite wall. Only update after the
             // owner has walked a meaningful distance so tiny position jitter does not spin the
@@ -1266,13 +1279,13 @@ public final class CompanionManager {
             double vx = (wx / waypointDistance) * speed;
             double velocityZ = (wz / waypointDistance) * speed;
 
-            boolean inWater = npc.isInWater() || npc.isUnderWater()
-                    || PathPlanner.isWaterAt(npc.getWorld(), npcLocation.getBlockX(), npcLocation.getBlockY(), npcLocation.getBlockZ())
-                    || PathPlanner.isWaterAt(npc.getWorld(), npcLocation.getBlockX(), npcLocation.getBlockY() - 1, npcLocation.getBlockZ());
+            boolean inWater = isInWater(npc, npcLocation);
+            updateMovementPose(npc, state, inWater);
+            updateFootsteps(npc, state, inWater, currentSpeed, currentTick);
             if (inWater) {
-                // A shallow persistent buoyancy velocity mimics swimming without toggling the
-                // deprecated swimming animation flag; the mannequin's water physics handles the
-                // actual bobbing and surface interaction.
+                // updateMovementPose has already switched the mannequin into the player's swim
+                // pose; this buoyancy velocity is only what keeps it near the surface instead of
+                // sinking like a stone while the pose plays.
                 double swimY = npc.getVelocity().getY();
                 if (swimY < 0.06) {
                     swimY = 0.06;
@@ -1291,7 +1304,8 @@ public final class CompanionManager {
 
             float yaw = (float) Math.toDegrees(Math.atan2(-vx, velocityZ));
             state.lastWalkingYaw = yaw;
-            npc.setPose(org.bukkit.entity.Pose.STANDING, true);
+            // Pose is owned by updateMovementPose: writing STANDING here would flip a swimming
+            // companion back upright every tick.
             // The body stays on course; when combat is active the head tracks the target instead
             // of glancing back at the owner. This keeps the companion visibly locked on while it
             // closes the distance.
@@ -1305,6 +1319,49 @@ public final class CompanionManager {
             }
         }, 1L, 1L);
         followTasks.put(key, task);
+    }
+
+    /** Whether the mannequin is currently in/under water or occupies a water block. */
+    private static boolean isInWater(Mannequin npc, Location location) {
+        World world = npc.getWorld();
+        return npc.isInWater() || npc.isUnderWater()
+                || PathPlanner.isWaterAt(world, location.getBlockX(), location.getBlockY(), location.getBlockZ())
+                || PathPlanner.isWaterAt(world, location.getBlockX(), location.getBlockY() - 1, location.getBlockZ());
+    }
+
+    private void updateMovementPose(Mannequin npc, FollowState state, boolean inWater) {
+        if (state.swimmingPose == inWater) {
+            return;
+        }
+        state.swimmingPose = inWater;
+        npc.setPose(inWater ? org.bukkit.entity.Pose.SWIMMING : org.bukkit.entity.Pose.STANDING, true);
+    }
+
+    /**
+     * Plays the step sound of the block beneath the mannequin, like a player's footstep.
+     *
+     * <p>Only plays while moving across solid ground: not while standing, swimming, or in the
+     * air. The small cooldown keeps the sound from firing every tick and approximates a run.</p>
+     */
+    private static void updateFootsteps(Mannequin npc, FollowState state, boolean inWater,
+                                        double horizontalSpeed, long currentTick) {
+        if (inWater || !npc.isOnGround() || horizontalSpeed < FOOTSTEP_SPEED) {
+            return;
+        }
+        if (state.lastFootstepTick != Long.MIN_VALUE
+                && currentTick - state.lastFootstepTick < FOOTSTEP_INTERVAL_TICKS) {
+            return;
+        }
+        Location location = npc.getLocation();
+        Block ground = location.clone().subtract(0.0, 0.2, 0.0).getBlock();
+        Sound stepSound = ground.getBlockData().getSoundGroup().getStepSound();
+        if (stepSound == null || stepSound == Sound.UI_BUTTON_CLICK) {
+            return;
+        }
+        state.lastFootstepTick = currentTick;
+        float volume = ground.getBlockData().getSoundGroup().getVolume() * 0.35f;
+        float pitch = ground.getBlockData().getSoundGroup().getPitch();
+        npc.getWorld().playSound(location, stepSound, SoundCategory.PLAYERS, volume, pitch);
     }
 
     /**
