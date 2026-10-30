@@ -5,23 +5,21 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.persistence.PersistentDataType;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The chest GUI opened by the companion control item, the panel's replacement for
+ * The chest GUI opened from Yui's interaction menu, the control panel for
  * {@code /ikut}, {@code /kesini}, {@code /serang} and {@code /tahan}.
  *
- * <p>Yui's item is the key: right-clicking it opens this menu, which drives whichever
+ * <p>Yui is the entry point: right-clicking her opens this menu, which drives whichever
  * companions the current target selection covers — Yui alone, Sandrone alone, or both.
  * The commands stay registered as a fallback and a shortcut; both paths call the very
  * same {@link CompanionManager} methods, so the two can never disagree about state.</p>
@@ -249,43 +247,6 @@ final class CompanionControlMenu implements InventoryHolder {
         }
         item.setItemMeta(meta);
         return item;
-    }
-
-    /**
-     * Builds the control item: the "key" the owner right-clicks to open this panel.
-     *
-     * <p>It carries a hidden tag rather than relying on the material or the name, so a renamed
-     * look-alike cannot open the menu and the item survives a material change in the config.</p>
-     */
-    static ItemStack createItem(CompanionNpcsPlugin plugin) {
-        Material material = plugin.controlItemMaterial();
-        ItemStack item = icon(material, "Panel Pendamping", NamedTextColor.LIGHT_PURPLE,
-                "Klik kanan untuk membuka menu",
-                "perintah Yui dan Sandrone.",
-                "",
-                "Ikut, Kesini, Serang, Tahan",
-                "tanpa mengetik command.");
-        ItemMeta meta = item.getItemMeta();
-        if (meta != null) {
-            meta.getPersistentDataContainer().set(
-                    plugin.controlKey(), PersistentDataType.BYTE, (byte) 1);
-            item.setItemMeta(meta);
-        }
-        return item;
-    }
-
-    /** Whether this stack is the control item, recognised by its hidden tag. */
-    static boolean isControlItem(CompanionNpcsPlugin plugin, ItemStack item) {
-        if (plugin == null || item == null || item.getType().isAir()) {
-            return false;
-        }
-        ItemMeta meta = item.getItemMeta();
-        if (meta == null) {
-            return false;
-        }
-        Byte tagged = meta.getPersistentDataContainer()
-                .get(plugin.controlKey(), PersistentDataType.BYTE);
-        return tagged != null && tagged == 1;
     }
 
     private static ItemStack filler() {

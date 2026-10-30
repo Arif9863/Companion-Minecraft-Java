@@ -47,10 +47,6 @@ attack-cooldown-ticks: 16
 yui-skeleton-mark-radius: 16.0
 sandrone-creeper-mark-radius: 16.0
 
-# Material used for the custom control item. Right-click opens the companion menu.
-# The item is given to each player on join if they do not already have one.
-control-item: PAPER
-
 # Serve the companion resource pack over HTTP so other players download it automatically.
 # The URL to put into server.properties (resource-pack=...) is printed at startup.
 pack-http-server: true

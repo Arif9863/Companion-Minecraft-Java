@@ -2130,9 +2130,14 @@ public final class CompanionManager {
         return changed;
     }
 
-    /**
-     * Whether a companion of the given archetype is currently following the owner.
-     */
+    /** Returns true when the entity UUID belongs to the given player's active companion. */
+    public boolean isOwnedBy(Player owner, UUID companionId) {
+        return ownerToNpc.entrySet().stream().anyMatch(entry ->
+                entry.getKey().ownerId().equals(owner.getUniqueId())
+                        && entry.getValue().equals(companionId));
+    }
+
+    /** Whether a companion of the given archetype is currently following the owner. */
     public boolean hasCompanion(UUID ownerId, String archetype) {
         return ownerToNpc.containsKey(new CompanionKey(ownerId, archetype.toLowerCase(Locale.ROOT)));
     }

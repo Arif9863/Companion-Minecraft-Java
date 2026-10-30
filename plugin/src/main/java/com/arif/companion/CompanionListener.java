@@ -1,7 +1,6 @@
 package com.arif.companion;
 
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
@@ -10,13 +9,16 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
-import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 
 public final class CompanionListener implements Listener {
 
@@ -28,17 +30,76 @@ public final class CompanionListener implements Listener {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
+        saveOpenBag(event.getPlayer());
         plugin.getManager().despawn(event.getPlayer());
     }
 
     /**
-     * Hands every player their control item on first join, and again whenever the backpack no
-     * longer holds one — so the panel is reachable without knowing any command.
+     * Retires the obsolete "Panel Pendamping" paper from older builds.
+     *
+     * <p>The mannequin replaced the item, so a leftover copy would sit in the backpack doing
+     * nothing. It is removed by its hidden tag only — never by material or name — so nothing
+     * else a player owns is touched.</p>
      */
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
-        plugin.getServer().getScheduler().runTaskLater(plugin,
-                () -> giveControlIfMissing(event.getPlayer()), 1L);
+        Player player = event.getPlayer();
+        org.bukkit.NamespacedKey obsolete = new org.bukkit.NamespacedKey(plugin, "control");
+        ItemStack[] contents = player.getInventory().getContents();
+        boolean removed = false;
+        for (int slot = 0; slot < contents.length; slot++) {
+            ItemStack item = contents[slot];
+            if (item == null || item.getType().isAir()) {
+                continue;
+            }
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) {
+                continue;
+            }
+            Byte tagged = meta.getPersistentDataContainer()
+                    .get(obsolete, PersistentDataType.BYTE);
+            if (tagged != null && tagged == 1) {
+                contents[slot] = null;
+                removed = true;
+            }
+        }
+        if (removed) {
+            player.getInventory().setContents(contents);
+            player.sendMessage(Component.text("Panel lama dihapus. Klik kanan Yui untuk membuka"
+                    + " Kontrol Pendamping dan Kantong Yui.", net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE));
+        }
+    }
+
+    /** Persist a bag even if the player disconnects while its inventory is open. */
+    void saveOpenBag(Player player) {
+        Inventory top = player.getOpenInventory().getTopInventory();
+        if (top.getHolder() instanceof YuiStorage.YuiStorageView view
+                && view.ownerId().equals(player.getUniqueId())) {
+            plugin.getStorage().save(view.ownerId(), top.getContents());
+        }
+    }
+
+    /**
+     * Clicking a tagged mannequin opens the menu, but only when it is the player's own Yui.
+     *
+     * <p>Every other interaction with a companion is refused: the mannequin is not a trade
+     * partner, a nametag target or anything else a right-click could normally do.</p>
+     */
+    @EventHandler
+    public void onCompanionInteract(PlayerInteractEntityEvent event) {
+        if (event.getHand() != EquipmentSlot.HAND) {
+            return;
+        }
+        if (!(event.getRightClicked() instanceof Mannequin mannequin)
+                || !mannequin.getScoreboardTags().contains(CompanionManager.TAG)) {
+            return;
+        }
+        event.setCancelled(true);
+        if (!mannequin.getScoreboardTags().contains("companion_yui")
+                || !plugin.getManager().isOwnedBy(event.getPlayer(), mannequin.getUniqueId())) {
+            return;
+        }
+        YuiInteractionMenu.open(plugin, event.getPlayer());
     }
 
     /**
@@ -57,89 +118,66 @@ public final class CompanionListener implements Listener {
         }
     }
 
-    /**
-     * Right-clicking the companion control item opens the control panel.
-     *
-     * <p>Only the main hand is handled, otherwise one right-click fires twice — once per hand —
-     * and the panel would open and immediately close again.</p>
-     */
     @EventHandler
-    public void onControlUse(PlayerInteractEvent event) {
-        if (event.getHand() != EquipmentSlot.HAND) {
+    public void onInteractionMenuClick(InventoryClickEvent event) {
+        Inventory top = event.getView().getTopInventory();
+        if (!(top.getHolder() instanceof YuiInteractionMenu menu)) {
             return;
         }
-        if (event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_AIR
-                && event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) {
-            return;
-        }
-        if (!CompanionControlMenu.isControlItem(plugin, event.getItem())) {
-            return;
-        }
-        // Block the vanilla use as well, so a control item that happens to be a usable material
-        // never plants, places or eats anything when the player only wanted the menu.
         event.setCancelled(true);
-        CompanionControlMenu.open(plugin, event.getPlayer());
+        if (event.getClickedInventory() == top && event.getWhoClicked() instanceof Player player) {
+            menu.handleClick(player, event.getSlot());
+        }
     }
 
-    /**
-     * Routes clicks inside the control panel to the button under the cursor and stops the
-     * panel from behaving like a real chest.
-     */
     @EventHandler
-    public void onMenuClick(InventoryClickEvent event) {
+    public void onControlMenuClick(InventoryClickEvent event) {
         Inventory top = event.getView().getTopInventory();
         if (!(top.getHolder() instanceof CompanionControlMenu menu)) {
             return;
         }
         event.setCancelled(true);
-        if (event.getClickedInventory() != top) {
-            return;
-        }
-        if (event.getWhoClicked() instanceof Player player) {
+        if (event.getClickedInventory() == top && event.getWhoClicked() instanceof Player player) {
             menu.handleClick(player, event.getSlot());
         }
     }
 
-    /** Refuses drags into the panel, otherwise items could still be dropped into its slots. */
+    /** Private bag contents can only be used by its owner. */
+    @EventHandler
+    public void onStorageClick(InventoryClickEvent event) {
+        if (!(event.getView().getTopInventory().getHolder() instanceof YuiStorage.YuiStorageView view)) {
+            return;
+        }
+        if (!view.ownerId().equals(event.getWhoClicked().getUniqueId())) {
+            event.setCancelled(true);
+            event.getWhoClicked().closeInventory();
+        }
+    }
+
+    /** Keep decorative menu slots immutable without blocking normal storage interactions. */
     @EventHandler
     public void onMenuDrag(InventoryDragEvent event) {
-        if (!(event.getView().getTopInventory().getHolder() instanceof CompanionControlMenu)) {
-            return;
-        }
-        int size = event.getView().getTopInventory().getSize();
-        for (int rawSlot : event.getRawSlots()) {
-            if (rawSlot < size) {
-                event.setCancelled(true);
-                return;
+        if (event.getView().getTopInventory().getHolder() instanceof YuiInteractionMenu
+                || event.getView().getTopInventory().getHolder() instanceof CompanionControlMenu) {
+            int size = event.getView().getTopInventory().getSize();
+            for (int rawSlot : event.getRawSlots()) {
+                if (rawSlot < size) {
+                    event.setCancelled(true);
+                    return;
+                }
             }
+        }
+        if (event.getView().getTopInventory().getHolder() instanceof YuiStorage.YuiStorageView view
+                && !view.ownerId().equals(event.getWhoClicked().getUniqueId())) {
+            event.setCancelled(true);
         }
     }
 
-    /** Hands a returning owner their control item if the backpack no longer has one. */
-    void giveControlIfMissing(Player player) {
-        if (plugin.controlItemMaterial() == null) {
-            return;
+    @EventHandler
+    public void onStorageClose(InventoryCloseEvent event) {
+        if (event.getView().getTopInventory().getHolder() instanceof YuiStorage.YuiStorageView view
+                && view.ownerId().equals(event.getPlayer().getUniqueId())) {
+            plugin.getStorage().save(view.ownerId(), event.getView().getTopInventory().getContents());
         }
-        if (hasControlItem(player)) {
-            return;
-        }
-        ItemStack leftover = player.getInventory().addItem(CompanionControlMenu.createItem(plugin))
-                .values().stream().findFirst().orElse(null);
-        if (leftover != null) {
-            player.sendMessage(Component.text("Backpack penuh, panel pendamping tidak masuk."
-                    + " Ambil lagi dengan /yui-npc item.", NamedTextColor.YELLOW));
-            return;
-        }
-        player.sendMessage(Component.text("Klik kanan [Panel Pendamping] untuk membuka"
-                + " perintah Yui dan Sandrone.", NamedTextColor.LIGHT_PURPLE));
-    }
-
-    private boolean hasControlItem(Player player) {
-        for (ItemStack item : player.getInventory().getContents()) {
-            if (CompanionControlMenu.isControlItem(plugin, item)) {
-                return true;
-            }
-        }
-        return false;
     }
 }

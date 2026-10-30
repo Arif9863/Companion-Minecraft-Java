@@ -3,8 +3,6 @@ package com.arif.companion;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
-import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -16,7 +14,6 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.HandlerList;
-import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -29,8 +26,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private CompanionManager manager;
     private CompanionListener listener;
     private PackHttpServer packServer;
-    private NamespacedKey controlKey;
-    private Material controlItemMaterial;
+    private YuiStorage storage;
     private String yuiSkinUrl;
     private String sandroneSkinUrl;
     private double comfortDistance;
@@ -48,10 +44,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        controlKey = new NamespacedKey(this, "control");
         saveDefaultConfig();
         readConfig();
         manager = new CompanionManager(this);
+        storage = new YuiStorage(this);
 
         registerCommand("yui-npc", new CompanionCommand("yui"));
         registerCommand("sandrone-npc", new CompanionCommand("sandrone"));
@@ -62,14 +58,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("companionnpc", new AdminCommand());
         listener = new CompanionListener(this);
         Bukkit.getPluginManager().registerEvents(listener, this);
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            listener.giveControlIfMissing(player);
-        }
 
         startPackServer();
 
         getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /serang, /tahan, /companionnpc");
-        getLogger().info("Right-click the companion control item to open the Yui/Sandrone panel.");
+        getLogger().info("Right-click Yui to open her menu: Kontrol Pendamping and Kantong Yui.");
         if (getConfig().getBoolean("debug-self-test", false)) {
             runSelfTest();
         }
@@ -152,14 +145,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         // Companion-specific defensive markers (10-24 blocks, default 16).
         yuiSkeletonMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("yui-skeleton-mark-radius", 16.0)));
         sandroneCreeperMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("sandrone-creeper-mark-radius", 16.0)));
-        String requestedControlItem = config.getString("control-item", "PAPER").toUpperCase(Locale.ROOT);
-        Material parsedControlItem = Material.matchMaterial(requestedControlItem);
-        if (parsedControlItem == null || !parsedControlItem.isItem()) {
-            getLogger().warning("Invalid control-item '" + requestedControlItem + "'; using PAPER.");
-            parsedControlItem = Material.PAPER;
-        }
-        controlItemMaterial = parsedControlItem;
-        config.set("control-item", controlItemMaterial.name());
     }
 
     @Override
@@ -171,6 +156,15 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         if (manager != null) {
             manager.despawnEverything();
         }
+        if (storage != null) {
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                if (listener != null) {
+                    listener.saveOpenBag(player);
+                }
+            }
+            storage.saveAll();
+            storage = null;
+        }
         listener = null;
     }
 
@@ -178,12 +172,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         return manager;
     }
 
-    NamespacedKey controlKey() {
-        return controlKey;
-    }
-
-    Material controlItemMaterial() {
-        return controlItemMaterial;
+    YuiStorage getStorage() {
+        return storage;
     }
 
     String skinUrl(String archetype) {
@@ -300,10 +290,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         @EventHandler
         public void onJoin(PlayerJoinEvent event) {
             Player owner = event.getPlayer();
-            if (listener != null) {
-                Bukkit.getScheduler().runTaskLater(CompanionNpcsPlugin.this,
-                        () -> listener.giveControlIfMissing(owner), 1L);
-            }
             if (selfTestListener != null) {
                 HandlerList.unregisterAll(selfTestListener);
                 selfTestListener = null;
@@ -362,24 +348,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             }
 
             String option = args[0].toLowerCase(Locale.ROOT);
-            if (option.equals("item") || option.equals("panel")) {
-                if (!player.hasPermission("companion.npc.control")) {
-                    player.sendMessage(Component.text("Kamu tidak punya izin mengambil item panel.",
-                            NamedTextColor.RED));
-                    return true;
-                }
-                ItemStack controlItem = CompanionControlMenu.createItem(CompanionNpcsPlugin.this);
-                ItemStack leftover = player.getInventory().addItem(controlItem)
-                        .values().stream().findFirst().orElse(null);
-                if (leftover != null) {
-                    player.sendMessage(Component.text("Backpack penuh, kosongkan satu slot lalu coba lagi.",
-                            NamedTextColor.YELLOW));
-                } else {
-                    player.sendMessage(Component.text("Item Panel Pendamping ditambahkan ke backpack.",
-                            NamedTextColor.LIGHT_PURPLE));
-                }
-                return true;
-            }
             if (option.equals("off") || option.equals("remove") || option.equals("clear")) {
                 manager.despawn(player, archetype);
                 player.sendMessage(Component.text(labelFor(archetype) + " dismissed.", colorFor(archetype)));
@@ -397,14 +365,14 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 player.sendMessage(Component.text(labelFor(archetype) + " skin URL saved.", colorFor(archetype)));
                 return true;
             }
-            player.sendMessage(Component.text("Usage: /" + label + " [item|default|off|https://skin-url]", NamedTextColor.YELLOW));
+            player.sendMessage(Component.text("Usage: /" + label + " [default|off|https://skin-url]", NamedTextColor.YELLOW));
             return true;
         }
 
         @Override
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
-                List<String> options = new ArrayList<>(List.of("item", "panel", "default", "off"));
+                List<String> options = new ArrayList<>(List.of("default", "off"));
                 String prefix = args[0].toLowerCase(Locale.ROOT);
                 options.removeIf(option -> !option.startsWith(prefix));
                 return options;
