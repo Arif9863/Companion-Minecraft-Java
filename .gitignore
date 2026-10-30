@@ -54,11 +54,11 @@ Paper/Paper26.3/plugins/Skript/scripts/-- Files prefixed with a hyphen are disab
 # Local Claude Code settings for this machine.
 .claude/
 
-# ===== Build output =====
+# Build output (classes remain excluded; the finished companion plugin JAR is
+# tracked separately so a fresh clone can install it without rebuilding Java).
 plugin/target/
 plugin/build/classes/
 plugin/build/stub-classes/
-plugin/build/*.jar
 *.class
 
 # ===== Editor / OS =====
