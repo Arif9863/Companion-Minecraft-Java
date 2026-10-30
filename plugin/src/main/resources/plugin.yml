@@ -46,7 +46,3 @@ permissions:
     default: true
   companion.npc.attack:
     default: true
-  companion.npc.control:
-    default: true
-  companion.npc.storage:
-    default: true

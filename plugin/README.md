@@ -48,23 +48,7 @@ there yourself, or rely on the Maven fallback above.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
 
-### Yui interaction menu
-
-Right-click your own Yui mannequin to open her menu. It offers two choices:
-
-- **Kontrol Pendamping** — the chest-style menu with **Ikut**, **Kesini**, **Serang**, and **Tahan**
-  controls, plus a target selector that cycles **Keduanya** → **Yui** → **Sandrone**. Companion cards
-  show each one's current mode and combat state. It calls the same manager methods as the commands,
-  so command use and menu state stay in sync.
-- **Kantong Yui** — opens Yui's private 27-slot Skript-backed bag. It uses the existing persistent
-  `companion::storage` data in `Paper/Paper26.3/plugins/Skript/variables.csv`; existing contents
-  are preserved and continue to save on inventory close and logout. Other players cannot open it.
-
-There is no separate control item: the mannequin itself is the key. Other right-click interactions
-with any companion (nametag, trade, use) are refused so they never trigger a vanilla action.
-Permissions: `companion.npc.control` for the menus, `companion.npc.storage` for the bag.
-
-Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system.
+Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system. Companion behavior stays command-driven; no extra GUI or control item is required.
 
 ## Defensive melee (`/serang`)
 

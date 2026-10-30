@@ -60,7 +60,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         startPackServer();
 
         getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /serang, /tahan, /companionnpc");
-        getLogger().info("Right-click Yui to open her menu: Kontrol Pendamping and Kantong Yui.");
         if (getConfig().getBoolean("debug-self-test", false)) {
             runSelfTest();
         }
