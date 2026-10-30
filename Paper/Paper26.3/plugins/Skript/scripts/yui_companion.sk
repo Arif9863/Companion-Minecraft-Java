@@ -412,5 +412,14 @@ command /yuibag:
             stop
         dv_storage_open(player, "yui")
 
+# Klik kanan Yui langsung membuka kantong milik pemain yang memanggil Yui.
+on rightclick on a mannequin:
+    if scoreboard tags of clicked entity does not contain "companion_yui":
+        stop trigger
+    if {-yui-active::%player's uuid%} is not true:
+        stop trigger
+    cancel event
+    dv_storage_open(player, "yui")
+
 on inventory close:
     dv_storage_save(player)
