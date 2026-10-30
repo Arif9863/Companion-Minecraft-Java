@@ -7,6 +7,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -27,6 +28,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -223,6 +225,14 @@ public final class CompanionManager {
      * turn back and forth at the edge of the search radius.</p>
      */
     private static final long ATTACK_TARGET_GRACE_TICKS = 60L;
+    /** How often a new marked hostile may be reported in owner chat (10 seconds). */
+    private static final long MARKER_ALERT_COOLDOWN_TICKS = 200L;
+    /** Particle marker interval: every 3 ticks so it stays visible without flooding particles. */
+    private static final long MARKER_PARTICLE_INTERVAL_TICKS = 3L;
+    /** Particle lifetime: short-lived; refreshed periodically while the hostile stays in range. */
+    private static final long MARKER_PARTICLE_LIFETIME_TICKS = 8L;
+    /** Maximum height offset for particles above a marked hostile. */
+    private static final double MARKER_PARTICLE_HEIGHT = 1.2;
 
     private static final class FollowState {
         private List<org.bukkit.util.Vector> path = List.of();
@@ -251,6 +261,10 @@ public final class CompanionManager {
         private float lastWalkingYaw;
         /** Sideways nudges already tried for the current jam. */
         private int sideStepAttempts;
+        /** Tick at which a danger marker was last sent, to avoid chat spam. */
+        private long lastMarkerAlertTick = Long.MIN_VALUE;
+        /** UUIDs of hostile mobs this companion is currently marking. */
+        private final Set<UUID> markedHostiles = new HashSet<>();
         /** The standing behaviour of this companion: follow in formation, or stay close. */
         private FollowMode mode = FollowMode.FOLLOW;
         /** Whether this companion is allowed to attack hostile mobs near the owner. */
@@ -766,6 +780,82 @@ public final class CompanionManager {
     }
 
     /**
+     * Updates this companion's defensive marker set and emits particles/chat for new threats.
+     *
+     * <p>Yui marks skeletons, Sandrone marks creepers. This only runs while /serang is enabled;
+     * it doesn't affect follow/close mode and doesn't apply the glowing effect that is visible
+     * through walls. Particles are spawned above each marked hostile and therefore only appear
+     * when there is a line of sight.</p>
+     */
+    private void updateDangerMarkers(Mannequin npc, Player owner, FollowState state,
+                                    long currentTick) {
+        if (!state.attackEnabled || !owner.isOnline()) {
+            clearDangerMarkers(state);
+            return;
+        }
+
+        String kind = "yui".equalsIgnoreCase(state.archetype) ? "skeleton" : "creeper";
+        double radius = "yui".equalsIgnoreCase(state.archetype)
+                ? plugin.yuiSkeletonMarkRadius()
+                : plugin.sandroneCreeperMarkRadius();
+        double radiusSquared = radius * radius;
+        EntityType wantedType = "yui".equalsIgnoreCase(state.archetype)
+                ? EntityType.SKELETON : EntityType.CREEPER;
+        Set<UUID> foundNow = new java.util.HashSet<>();
+
+        for (Entity entity : owner.getNearbyEntities(radius, radius, radius)) {
+            if (!(entity instanceof LivingEntity hostile)
+                    || hostile.getType() != wantedType
+                    || !hostile.isValid() || hostile.isDead()) {
+                continue;
+            }
+            if (!isThreatToParty(hostile, owner, npc)) {
+                continue;
+            }
+            if (hostile.getLocation().distanceSquared(owner.getLocation()) > radiusSquared) {
+                continue;
+            }
+            UUID hostileId = hostile.getUniqueId();
+            foundNow.add(hostileId);
+            if (!state.markedHostiles.contains(hostileId)) {
+                state.markedHostiles.add(hostileId);
+                sendMarkerAlert(owner, state, kind, currentTick);
+            }
+            if (currentTick % MARKER_PARTICLE_INTERVAL_TICKS == 0L) {
+                Location particleLocation = hostile.getLocation().add(0.0, hostile.getHeight() + 0.25, 0.0);
+                Particle.DustOptions dust = new Particle.DustOptions(
+                        "yui".equalsIgnoreCase(state.archetype)
+                                ? org.bukkit.Color.fromRGB(255, 105, 180)
+                                : org.bukkit.Color.fromRGB(80, 220, 255),
+                        1.2f);
+                hostile.getWorld().spawnParticle(Particle.DUST, particleLocation,
+                        3, 0.18, 0.12, 0.18, 0.0, dust);
+            }
+        }
+        // Remove UUIDs for mobs that died, left the radius, or stopped targeting the owner.
+        state.markedHostiles.retainAll(foundNow);
+    }
+
+    /** Clear marker bookkeeping when the combat toggle is turned off. */
+    private static void clearDangerMarkers(FollowState state) {
+        state.markedHostiles.clear();
+    }
+
+    /** Send a companion-name-prefixed alert, capped to one message every 10 seconds. */
+    private void sendMarkerAlert(Player owner, FollowState state, String kind, long currentTick) {
+        boolean firstAlert = state.lastMarkerAlertTick == Long.MIN_VALUE;
+        if (!firstAlert && currentTick - state.lastMarkerAlertTick < MARKER_ALERT_COOLDOWN_TICKS) {
+            return;
+        }
+        state.lastMarkerAlertTick = currentTick;
+        Component prefix = "yui".equalsIgnoreCase(state.archetype)
+                ? Component.text("[Yui] ", NamedTextColor.LIGHT_PURPLE)
+                : Component.text("[Sandrone] ", NamedTextColor.AQUA);
+        Component message = Component.text("Ada " + kind + " di sekitar!", NamedTextColor.YELLOW);
+        owner.sendMessage(prefix.append(message));
+    }
+
+    /**
      * Picks the mob this companion fights, keeping the current target while it is still valid.
      *
      * <p>The current target is kept for a short grace period so the companion does not drop a mob
@@ -983,6 +1073,8 @@ public final class CompanionManager {
                     targetSpot = meleeSpot(npc, attackTarget);
                 }
             }
+            // Defensive markers only exist while combat mode is on.
+            updateDangerMarkers(npc, owner, state, currentTick);
             double targetDx = targetSpot.getX() - npcLocation.getX();
             double targetDz = targetSpot.getZ() - npcLocation.getZ();
             double targetDistance = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
@@ -1789,6 +1881,8 @@ public final class CompanionManager {
                 state.attackTarget = null;
                 state.attackTargetTick = Long.MIN_VALUE;
                 state.lastSwingTick = Long.MIN_VALUE;
+                clearDangerMarkers(state);
+                state.lastMarkerAlertTick = Long.MIN_VALUE;
                 // Drop the sword again and let the companion resume its formation spot.
                 state.path = List.of();
                 state.plannedGoal = null;
@@ -1902,6 +1996,7 @@ public final class CompanionManager {
         followTasks.clear();
         for (FollowState state : followStates.values()) {
             closeOwnDoors(state);
+            clearDangerMarkers(state);
         }
         followStates.clear();
         ownerToNpc.clear();

@@ -42,6 +42,11 @@ attack-search-radius: 8.0
 attack-damage: 5.0
 attack-cooldown-ticks: 16
 
+# Defensive mob markers are visual particles + chat alerts, only while /serang is active.
+# Yui watches skeletons; Sandrone watches creepers. Radius is centered on the owner (10-24).
+yui-skeleton-mark-radius: 16.0
+sandrone-creeper-mark-radius: 16.0
+
 # Serve the companion resource pack over HTTP so other players download it automatically.
 # The URL to put into server.properties (resource-pack=...) is printed at startup.
 pack-http-server: true

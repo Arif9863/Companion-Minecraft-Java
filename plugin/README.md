@@ -64,6 +64,10 @@ companion can hold the formation and still fight.
   `attack-cooldown-ticks` ticks while within the vanilla melee reach of 3 blocks; the swing deals
   `attack-damage`. The companion closes to about 1.4 blocks and stops there, so it settles
   instead of shoving into the mob, and it keeps its head on the target the whole way.
+- **Danger markers (`/serang`)** use visible-but-not-wall-penetrating particles: Yui marks
+  skeletons; Sandrone marks creepers, each within its configured radius around the owner.
+  The companion announces a newly detected threat in chat (maximum one alert every 10 seconds).
+  Markers stop when `/tahan` is used; peaceful mobs are never marked.
 - **It is never a target.** Any mob that would choose a companion is refused, so it keeps coming
   for you instead. A companion that had drawn aggro has it handed back to you on the next swing.
 - **Armed only while fighting.** The companion holds an iron sword while `/serang` is active and
@@ -125,6 +129,8 @@ Set `yui.skin-url` and/or `sandrone.skin-url` in `plugins/CompanionNPCs/config.y
 | `attack-search-radius` | 8.0 | How far a hostile mob may be from you for a companion to defend you (2–16) |
 | `attack-damage` | 5.0 | Damage per melee swing (1–40) |
 | `attack-cooldown-ticks` | 16 | Ticks between two swings, 20 = one second (4–40) |
+| `yui-skeleton-mark-radius` | 16.0 | How far Yui marks skeletons around you (10–24) |
+| `sandrone-creeper-mark-radius` | 16.0 | How far Sandrone marks creepers around you (10–24) |
 | `pack-http-server` | true | Serve the resource pack over HTTP |
 | `pack-http-port` | 8765 | Port for that HTTP server |
 | `debug-self-test` | false | Spawn both NPCs at startup — test server only |

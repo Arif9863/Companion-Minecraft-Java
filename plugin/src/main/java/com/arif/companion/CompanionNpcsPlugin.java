@@ -37,6 +37,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private double attackSearchRadius;
     private double attackDamage;
     private long attackCooldownTicks;
+    private double yuiSkeletonMarkRadius;
+    private double sandroneCreeperMarkRadius;
 
     @Override
     public void onEnable() {
@@ -135,6 +137,9 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         attackDamage = Math.max(1.0, Math.min(40.0, config.getDouble("attack-damage", 5.0)));
         // Ticks between two swings (20 ticks = one second).
         attackCooldownTicks = Math.max(4L, Math.min(40L, config.getLong("attack-cooldown-ticks", 16L)));
+        // Companion-specific defensive markers (10-24 blocks, default 16).
+        yuiSkeletonMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("yui-skeleton-mark-radius", 16.0)));
+        sandroneCreeperMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("sandrone-creeper-mark-radius", 16.0)));
     }
 
     @Override
@@ -208,6 +213,16 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     /** Ticks between two melee swings. */
     long attackCooldownTicks() {
         return attackCooldownTicks;
+    }
+
+    /** Radius around the owner where Yui marks skeletons while combat mode is enabled. */
+    double yuiSkeletonMarkRadius() {
+        return yuiSkeletonMarkRadius;
+    }
+
+    /** Radius around the owner where Sandrone marks creepers while combat mode is enabled. */
+    double sandroneCreeperMarkRadius() {
+        return sandroneCreeperMarkRadius;
     }
 
     /**
