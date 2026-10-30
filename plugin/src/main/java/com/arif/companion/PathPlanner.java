@@ -39,6 +39,8 @@ final class PathPlanner {
 
     /** Maximum safe drop while following: never descend more than one block in a single step. */
     private static final int MAX_DROP = 1;
+    /** Combat may descend up to three blocks towards a hostile target below the companion. */
+    private static final int MAX_COMBAT_DROP = 3;
     /** Maximum vertical swimming neighbors explored per horizontal step. */
     private static final int MAX_SWIM_VERTICAL_STEP = 1;
 
@@ -62,15 +64,17 @@ final class PathPlanner {
     }
 
     /**
-     * Computes a route from the companion to the owner.
+     * Computes a route from the companion to a goal.
      *
-     * @param world    world both entities are in
-     * @param start    current companion position
-     * @param goal     desired owner position
-     * @param radius   horizontal search radius in blocks
+     * @param world       world both entities are in
+     * @param start       current companion position
+     * @param goal        desired goal position
+     * @param radius      horizontal search radius in blocks
+     * @param combatDrop  when true, allow up to three-block safe descents toward a mob
      * @return waypoint centres from start towards the goal, or an empty list when no route exists
      */
-    static List<Vector> findPath(World world, Location start, Location goal, int radius) {
+    static List<Vector> findPath(World world, Location start, Location goal, int radius,
+                                 boolean combatDrop) {
         Node startNode = toNode(start);
         Node goalNode = toNode(goal);
 
@@ -111,7 +115,7 @@ final class PathPlanner {
                 return buildWaypoints(cameFrom, node, start);
             }
 
-            for (Node neighbour : neighbours(world, node, radius, false)) {
+            for (Node neighbour : neighbours(world, node, radius, false, combatDrop)) {
                 if (closed.contains(neighbour)) {
                     continue;
                 }
@@ -159,7 +163,7 @@ final class PathPlanner {
         while (!queue.isEmpty() && expanded < nodeBudget) {
             Node current = queue.remove();
             expanded++;
-            for (Node next : neighbours(world, current, radius, true)) {
+            for (Node next : neighbours(world, current, radius, true, false)) {
                 if (visited.add(next)) {
                     queue.add(next);
                 }
@@ -227,7 +231,7 @@ final class PathPlanner {
         while (!queue.isEmpty() && expanded < nodeBudget) {
             Node current = queue.remove();
             expanded++;
-            for (Node next : neighbours(world, current, radius, false)) {
+            for (Node next : neighbours(world, current, radius, false, false)) {
                 if (visited.add(next)) {
                     queue.add(next);
                 }
@@ -245,8 +249,14 @@ final class PathPlanner {
         return block.getBlockData() instanceof org.bukkit.block.data.type.Bed;
     }
 
-    /** Expands a node into reachable neighbours: flat moves, one-block step up, and drops. */
-    private static List<Node> neighbours(World world, Node node, int radius, boolean relaxed) {
+    /**
+     * Expands a node into reachable neighbours: flat moves, one-block step up, and drops.
+     *
+     * @param combatDrop when true, drops of up to three blocks are allowed, but only onto solid
+     *                    ground — a fall into the void is still never a route
+     */
+    private static List<Node> neighbours(World world, Node node, int radius, boolean relaxed,
+                                         boolean combatDrop) {
         List<Node> result = new ArrayList<>(12);
         int[][] horizontal = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
@@ -266,10 +276,34 @@ final class PathPlanner {
                 result.add(flat);
             }
 
-            // Falling down one block at most. A deeper drop is never treated as a walkable route.
-            Node down = new Node(nx, node.y() - 1, nz);
-            if ((relaxed ? isOwnerStandable(world, down) : isStandable(world, down)) && withinRadius(node, down, radius)) {
-                result.add(down);
+            // Falling down. Following never descends more than one block, but a fight may: a
+            // skeleton two or three blocks below the companion is a legitimate target, and the
+            // companion used to stand and watch it because no route existed. The search is for
+            // the landing block — feet and head must be clear on the way down, and the landing
+            // must have solid ground beneath it, so a fall into the void is still never a route.
+            if (relaxed) {
+                Node down = new Node(nx, node.y() - 1, nz);
+                if (isOwnerStandable(world, down) && withinRadius(node, down, radius)) {
+                    result.add(down);
+                }
+            } else {
+                int maxDrop = combatDrop ? MAX_COMBAT_DROP : MAX_DROP;
+                for (int drop = 1; drop <= maxDrop; drop++) {
+                    Node down = new Node(nx, node.y() - drop, nz);
+                    if (!withinRadius(node, down, radius)) {
+                        break;
+                    }
+                    // Something solid in the shaft means this column is not a route at all.
+                    if (!isClearColumn(world, down)) {
+                        break;
+                    }
+                    // Landed: this is the block the companion would end up standing on.
+                    if (hasGroundSupport(world, down)) {
+                        result.add(down);
+                        break;
+                    }
+                    // Open air below — keep looking for the floor, up to the allowed depth.
+                }
             }
 
             // Swimming: while submerged, allow gentle vertical movement so the companion can
@@ -353,6 +387,22 @@ final class PathPlanner {
         }
         // A wooden door occupies two blocks, so the upper half counts as clear as well.
         return isOpenable(head) || hasNoCollision(head);
+    }
+
+    /**
+     * Whether the two-block-high column at the given node is clear, without requiring a floor.
+     * Used only while checking a controlled fall down to a known landing block.
+     */
+    private static boolean isClearColumn(World world, Node node) {
+        if (!isChunkLoaded(world, node)) {
+            return false;
+        }
+        Block feet = world.getBlockAt(node.x(), node.y(), node.z());
+        Block head = world.getBlockAt(node.x(), node.y() + 1, node.z());
+        return feet.getType() != Material.LAVA
+                && head.getType() != Material.LAVA
+                && isPassable(world, node)
+                && (isOpenable(head) || hasNoCollision(head));
     }
 
     /**

@@ -1170,7 +1170,11 @@ public final class CompanionManager {
 
             if (needsReplan) {
                 state.lastAttemptTick = currentTick;
-                state.path = PathPlanner.findPath(npc.getWorld(), npcLocation, targetSpot, PATH_RADIUS);
+                // Combat may route down onto a hostile up to three blocks below. Following keeps
+                // the strict one-block descent so it never walks off a ravine while chasing.
+                boolean combatDrop = attackTarget != null;
+                state.path = PathPlanner.findPath(npc.getWorld(), npcLocation, targetSpot,
+                        PATH_RADIUS, combatDrop);
                 state.waypointIndex = 0;
                 state.plannedGoal = targetSpot.clone();
                 state.lastPlanTick = currentTick;
