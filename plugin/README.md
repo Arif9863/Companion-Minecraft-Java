@@ -4,10 +4,37 @@ This plugin spawns skin-bearing `Mannequin` entities, using only Paper's public 
 
 ## Build and install
 
+The build scripts are location-independent: they resolve every path from their own
+location, find a JDK through `JAVA_HOME` or the usual install folders, and locate a
+Paper server folder by looking for its `libraries/io/papermc/paper/paper-api`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-plugin.ps1
+```
+
+- Stops nothing; build the JAR, then restart the server to load it.
+- If the server folder cannot be found the script falls back to `mvn package`
+  (`plugin/pom.xml` declares the PaperMC repository, so Maven downloads the API).
+- `-ServerDir <path>` points at a server elsewhere, `-SkipDeploy` builds without
+  copying into `plugins/`.
+- `.\rebuild-pack.ps1` rebuilds the voice resource pack the same way; pass a server
+  folder as its first argument when there is more than one.
+
 1. Stop the production Paper server with `stop` in its console and wait for `Done`/shutdown completion.
-2. Build with `build-plugin.ps1` in `G:\GameServerJava` (compiles with Java 25 and copies the JAR into `Paper/Paper26.3/plugins/`). `mvn package` also works.
+2. Run `build-plugin.ps1` as above, or `mvn package` from `plugin/`.
 3. Make sure the resource pack is enabled on the client. For server auto-download, host the ZIP at HTTPS and configure `resource-pack` in `server.properties`; manual client activation also works.
 4. Start Paper once. Plugin creates `plugins/CompanionNPCs/config.yml`.
+
+### Moving to another machine
+
+```bash
+git clone https://github.com/Arif9863/Companion-Minecraft-Java.git
+```
+
+The clone carries the plugin sources, both companion Skript scripts, the voice audio,
+the companion skins, `pack.mcmeta`, and both build scripts. It does not carry the
+world, `server.properties`, or the Paper server's `libraries/` — install Paper
+there yourself, or rely on the Maven fallback above.
 
 ## Commands
 

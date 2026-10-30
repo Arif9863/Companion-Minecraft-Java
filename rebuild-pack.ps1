@@ -11,7 +11,12 @@
 #  Cara pakai:
 #    - klik kanan file ini -> Run with PowerShell
 #    - atau dari terminal:
-#      powershell -NoProfile -ExecutionPolicy Bypass -File G:\GameServerJava\rebuild-pack.ps1
+#      powershell -NoProfile -ExecutionPolicy Bypass -File .\rebuild-pack.ps1
+#
+#  Script ini portabel: lokasi proyek diambil dari lokasi file ini, dan
+#  folder server Paper dicari otomatis. Kalau punya lebih dari satu server,
+#  sebutkan lokasinya:
+#      powershell -NoProfile -ExecutionPolicy Bypass -File .\rebuild-pack.ps1 D:\Server\Paper26.3
 #
 #  POLA NAMA FILE (harus ikut):
 #    yui_<aksi>_<nomor>.ogg      contoh: yui_idle_09.ogg
@@ -26,13 +31,37 @@
 
 $ErrorActionPreference = 'Stop'
 
-$base      = 'G:\GameServerJava\Paper\Paper26.3'
-$sourceDir = Join-Path $base 'resource-pack-source'
-$packDir   = Join-Path $base 'resource-pack'
+# ---- Lokasi proyek, diturunkan dari lokasi file ini -------------------
+$root = $PSScriptRoot
+
+# Server Paper: cari folder yang punya resource-pack-source, atau terima
+# lewat argumen -ServerDir. Kalau tidak ketemu, pakai folder Paper di root.
+$serverDir = ''
+if ($args -and $args[0] -and -not $args[0].StartsWith('-')) { $serverDir = $args[0] }
+if (-not $serverDir) {
+    $paperRoot = Join-Path $root 'Paper'
+    if (Test-Path $paperRoot) {
+        Get-ChildItem $paperRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            if (Test-Path (Join-Path $_.FullName 'resource-pack-source')) { return $_.FullName }
+        }
+    }
+}
+if (-not $serverDir) {
+    $serverDir = Join-Path $root 'Paper\Paper26.3'
+    if (-not (Test-Path (Join-Path $serverDir 'resource-pack-source'))) {
+        $serverDir = $root
+    }
+}
+
+$sourceDir = Join-Path $serverDir 'resource-pack-source'
+$packDir   = Join-Path $serverDir 'resource-pack'
 $sndDir    = Join-Path $packDir 'assets\companion\sounds'
 $jsonPath  = Join-Path $packDir 'assets\companion\sounds.json'
-$zipPath   = Join-Path $base 'companion-voices-26.3.zip'
+$zipPath   = Join-Path $serverDir 'companion-voices-26.3.zip'
 $clientZip = Join-Path $env:APPDATA '.minecraft\resourcepacks\companion-voices-26.3.zip'
+
+Write-Host ("  lokasi proyek : " + $root)
+Write-Host ("  lokasi server : " + $serverDir)
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.IO.Compression
