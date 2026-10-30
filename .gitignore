@@ -22,10 +22,13 @@ Paper/Paper26.3/banned-ips.json
 Paper/Paper26.3/banned-players.json
 Paper/Paper26.3/whitelist.json
 
-# The built resource pack ZIP and the extracted copy are build output.
-# The source audio stays tracked in resource-pack-source/.
+# The built resource pack ZIP is build output.
+# The source audio stays tracked in resource-pack-source/, and the pack's manifest
+# plus the companion skins are tracked too: they cannot be regenerated from the
+# audio, and without them the pack is rejected by the client.
 Paper/Paper26.3/companion-voices-*.zip
-Paper/Paper26.3/resource-pack/
+Paper/Paper26.3/resource-pack/assets/companion/sounds/
+Paper/Paper26.3/resource-pack/assets/companion/sounds.json
 
 # Third-party plugin jars.
 Paper/Paper26.3/plugins/*.jar
