@@ -2137,6 +2137,27 @@ public final class CompanionManager {
         return ownerToNpc.containsKey(new CompanionKey(ownerId, archetype.toLowerCase(Locale.ROOT)));
     }
 
+    /**
+     * The follow mode a companion is in right now, or null when it is not active.
+     *
+     * <p>Read-only view for the control panel: it shows which mode is in force without
+     * changing anything, so the GUI can never disagree with the commands.</p>
+     */
+    public FollowMode modeOf(Player owner, String archetype) {
+        FollowState state = followStates.get(
+                new CompanionKey(owner.getUniqueId(), archetype.toLowerCase(Locale.ROOT)));
+        return state == null ? null : state.mode;
+    }
+
+    /**
+     * Whether a companion is currently allowed to attack, or false when it is not active.
+     */
+    public boolean isAttacking(Player owner, String archetype) {
+        FollowState state = followStates.get(
+                new CompanionKey(owner.getUniqueId(), archetype.toLowerCase(Locale.ROOT)));
+        return state != null && state.attackEnabled;
+    }
+
     private void cancel(CompanionKey key) {
         BukkitTask task = followTasks.remove(key);
         if (task != null) {

@@ -48,6 +48,12 @@ there yourself, or rely on the Maven fallback above.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
 
+### Companion control panel
+
+Each player receives a **Panel Pendamping** item on first join (and again if it is missing).
+Right-click it to open a chest-style menu with **Ikut**, **Kesini**, **Serang**, and **Tahan** controls.
+The target selector cycles between **Keduanya**, **Yui**, and **Sandrone**, and the companion cards show their current mode and combat state. The menu calls the same manager methods as the commands, so command use and GUI state stay in sync. Commands remain available as shortcuts and fallback. If the item is lost, use `/yui-npc item` to get another. The item material is configurable with `control-item` (defaults to `PAPER`).
+
 Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system.
 
 ## Defensive melee (`/serang`)

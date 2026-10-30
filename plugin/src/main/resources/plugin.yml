@@ -8,7 +8,7 @@ commands:
   yui-npc:
     aliases: [yui-chan]
     description: Spawn or dismiss Yui mannequin NPC companion
-    usage: /yui-npc [skin-url|default|off]
+    usage: /yui-npc [skin-url|default|off|item]
     permission: companion.npc.yui
   sandrone-npc:
     aliases: [sandrone-chan]
@@ -45,4 +45,6 @@ permissions:
   companion.npc.close:
     default: true
   companion.npc.attack:
+    default: true
+  companion.npc.control:
     default: true
