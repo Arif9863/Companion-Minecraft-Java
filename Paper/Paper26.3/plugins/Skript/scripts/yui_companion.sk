@@ -167,7 +167,11 @@ function dv_storage_bind(p: player, kind: text):
                 set {_npc} to loop-entity
     if {_npc} is set:
         set {_nid} to uuid of {_npc}
-        set {-dv::owner::%{_nid}%} to {_id}
+        # Bind only when unowned. Never steal another player's mannequin: the nearest
+        # companion here may belong to somebody else, and the /yui-npc spawn may even
+        # have been refused, leaving no companion of our own.
+        if {-dv::owner::%{_nid}%} is not set:
+            set {-dv::owner::%{_nid}%} to {_id}
 
 # ==== DuoVoice: orkestrator ====
 # Klaim giliran SEBELUM ucapan dikeluarkan; cooldown hanya dipasang
@@ -412,11 +416,19 @@ command /yuibag:
             stop
         dv_storage_open(player, "yui")
 
-# Klik kanan Yui langsung membuka kantong milik pemain yang memanggil Yui.
+# Klik kanan Yui: hanya pemiliknya yang boleh membuka kantong.
+# Cek kepemilikan DILETAKAN lebih dulu: kalau hanya memeriksa flag "punya Yui",
+# pemain yang Yui-nya gagal muncul tetap bisa membuka kantong orang lain.
 on rightclick on a mannequin:
     if scoreboard tags of clicked entity does not contain "companion_yui":
         stop trigger
+    set {_nid} to uuid of clicked entity
+    if {-dv::owner::%{_nid}%} is not player's uuid:
+        broadcast "&d[Yui] Hati dan kasih Yui hanya untuk Arif"
+        play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
+        stop trigger
     if {-yui-active::%player's uuid%} is not true:
+        send "&cPanggil Yui terlebih dahulu dengan /yui."
         stop trigger
     cancel event
     dv_storage_open(player, "yui")

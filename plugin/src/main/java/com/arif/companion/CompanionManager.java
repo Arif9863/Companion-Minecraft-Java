@@ -406,6 +406,13 @@ public final class CompanionManager {
      */
     private UUID erisOwnerId;
     /**
+     * Whether the owner has actually called Eris.
+     *
+     * <p>A designated owner only reserves her: the testers keep access until he calls her, at
+     * which point she is claimed for good.</p>
+     */
+    private boolean erisCalled;
+    /**
      * The player Eris is reserved for, taken from the config.
      *
      * <p>Only this player may call her while she has not been claimed yet, which is how the
@@ -459,8 +466,22 @@ public final class CompanionManager {
      *
      * <p>The bond survives a restart: whoever called Eris first keeps her, so the owner is
      * written to disk as soon as she is claimed.</p>
+     *
+     * <p>A designated owner in the config wins over the stored one. Without that, an owner
+     * recorded by an earlier test run would keep Eris forever and the configured player
+     * could never call her — which is exactly what happened the first time.</p>
      */
     private void loadErisOwner() {
+        if (erisDesignatedOwner != null) {
+            if (!erisDesignatedOwner.equals(erisOwnerId)) {
+                plugin.getLogger().info("Eris owner set to the configured player "
+                        + erisDesignatedOwner + ".");
+            }
+            erisOwnerId = erisDesignatedOwner;
+            saveErisOwner();
+            erisStates.computeIfAbsent(erisOwnerId, ErisState::new);
+            return;
+        }
         File file = new File(plugin.getDataFolder(), "eris-owner.yml");
         if (!file.isFile()) {
             return;
@@ -480,16 +501,20 @@ public final class CompanionManager {
     /**
      * Whether the given player is allowed to use Eris at all.
      *
-     * <p>The designated owner always may. A tester may only while nobody has claimed Eris yet —
-     * once the owner has called her, the testers lose every Eris command, exactly as the owner
-     * asked. Everybody else is refused.</p>
+     * <p>The owner always may. A tester may only while the owner has not called her yet —
+     * once he does, the testers lose every Eris command, exactly as the owner asked. Everybody
+     * else is refused.</p>
      */
     public boolean mayUseEris(UUID playerId) {
-        if (erisOwnerId != null) {
-            return erisOwnerId.equals(playerId);
+        if (erisOwnerId != null && erisOwnerId.equals(playerId)) {
+            return true;
         }
-        if (erisDesignatedOwner != null) {
-            return erisDesignatedOwner.equals(playerId);
+        if (erisClaimed()) {
+            // Somebody already owns her: only that player may still command her.
+            return false;
+        }
+        if (erisDesignatedOwner != null && erisDesignatedOwner.equals(playerId)) {
+            return true;
         }
         return erisTesters.contains(playerId);
     }
@@ -504,9 +529,14 @@ public final class CompanionManager {
         return erisOwnerId != null && erisOwnerId.equals(playerId);
     }
 
-    /** Whether Eris has already been claimed by somebody. */
+    /**
+     * Whether Eris has already been called by her owner.
+     *
+     * <p>A designated owner reserves her but does not own her yet: she is only claimed once
+     * that player actually calls her. Until then the testers may still use her.</p>
+     */
     public boolean erisClaimed() {
-        return erisOwnerId != null;
+        return erisCalled;
     }
 
     /**
@@ -519,16 +549,17 @@ public final class CompanionManager {
      * @return true when the caller may have Eris, whether or not they claimed her
      */
     public boolean claimEris(Player owner) {
+        UUID playerId = owner.getUniqueId();
         if (erisOwnerId != null) {
-            return erisOwnerId.equals(owner.getUniqueId());
+            return erisOwnerId.equals(playerId);
         }
-        if (erisDesignatedOwner != null && !erisDesignatedOwner.equals(owner.getUniqueId())) {
-            // A tester: Eris is hers to try out, but not hers to keep.
-            return erisTesters.contains(owner.getUniqueId());
+        if (erisDesignatedOwner != null && !erisDesignatedOwner.equals(playerId)) {
+            // A tester may spawn Eris without claiming her; she remains reserved for Ferdi.
+            return erisTesters.contains(playerId);
         }
-        erisOwnerId = owner.getUniqueId();
+        erisOwnerId = playerId;
         saveErisOwner();
-        erisStates.computeIfAbsent(erisOwnerId, ErisState::new);
+        erisStates.computeIfAbsent(playerId, ErisState::new);
         return true;
     }
 
