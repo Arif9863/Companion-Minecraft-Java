@@ -1,3 +1,10 @@
+# Players allowed to use Yui and Sandrone, by UUID.
+# Nobody else can call them or change their behaviour — not even an OP.
+# Add the UUID of a friend on their own line to give them access.
+# The owner of a companion is the player who called it, so the companion stays with them.
+companion-owners:
+  - "515402e5-832e-311e-b35f-3f3f0eca8f4f"
+
 # Optional hosted skin URL. Leave blank to use the bundled character skin in the companion resource pack.
 yui:
   skin-url: ""

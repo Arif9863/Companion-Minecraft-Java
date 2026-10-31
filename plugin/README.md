@@ -53,6 +53,12 @@ her own commands below, and `/serang eris` is refused with a pointer to them.
 - `/eris` (alias `/eris-chan`) — call Eris, the standalone companion.
 - `/eris ikut`, `/eris kesini`, `/eris serang`, `/eris tahan`, `/eris off` — control her.
 
+**Yui and Sandrone are UUID-locked.** Only UUIDs listed in `companion-owners` in
+`plugins/CompanionNPCs/config.yml` may call them or use their behaviour commands; OP status does
+not bypass the restriction. The default list holds Arif's UUID. Add another player's UUID on its
+own line under `companion-owners` to grant access, then restart the server or run
+`/companionnpc reload`. Commands never touch another player's companion.
+
 Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system. Companion behavior stays command-driven; no extra GUI or control item is required.
 
 ## Eris (standalone companion)

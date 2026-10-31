@@ -18,8 +18,11 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
 
 public final class CompanionNpcsPlugin extends JavaPlugin {
 
@@ -41,6 +44,24 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private long attackCooldownTicks;
     private double yuiSkeletonMarkRadius;
     private double sandroneCreeperMarkRadius;
+    /**
+     * UUIDs allowed to use Yui and Sandrone.
+     *
+     * <p>These two companions are reserved: only the players listed here can call them or
+     * change their behaviour. An empty list means nobody is allowed, so the companion is
+     * off limits until a UUID is configured.</p>
+     */
+    private final Set<UUID> yuiSandroneAllowed = new HashSet<>();
+
+    /**
+     * Whether the given player may use Yui and Sandrone.
+     *
+     * <p>OP does not override this list — the restriction is about the characters themselves,
+     * not about server administration.</p>
+     */
+    boolean mayUseYuiAndSandrone(UUID playerId) {
+        return yuiSandroneAllowed.contains(playerId);
+    }
 
     @Override
     public void onEnable() {
@@ -106,6 +127,20 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
     private void readConfig() {
         FileConfiguration config = getConfig();
+        yuiSandroneAllowed.clear();
+        List<String> configuredOwners = config.getStringList("companion-owners");
+        if (configuredOwners.isEmpty()) {
+            // Existing installation default: reserve Yui and Sandrone to Arif9863.
+            configuredOwners = List.of("515402e5-832e-311e-b35f-3f3f0eca8f4f");
+            config.set("companion-owners", configuredOwners);
+        }
+        for (String entry : configuredOwners) {
+            try {
+                yuiSandroneAllowed.add(UUID.fromString(entry.trim()));
+            } catch (IllegalArgumentException ex) {
+                getLogger().warning("Ignoring invalid UUID in companion-owners: " + entry);
+            }
+        }
         yuiSkinUrl = config.getString("yui.skin-url", "");
         sandroneSkinUrl = config.getString("sandrone.skin-url", "");
         erisSkinUrl = config.getString("eris.skin-url", "");
@@ -331,6 +366,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 sender.sendMessage(Component.text("This command can only be used by a player.", NamedTextColor.RED));
                 return true;
             }
+            if (!mayUseYuiAndSandrone(player.getUniqueId())) {
+                player.sendMessage(Component.text("Yui dan Sandrone hanya untuk pemiliknya.",
+                        NamedTextColor.RED));
+                return true;
+            }
 
             if (args.length == 0) {
                 manager.spawn(player, archetype);
@@ -398,6 +438,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                         + " [yui|sandrone|semua]", NamedTextColor.YELLOW));
                 return true;
             }
+            if (!mayUseYuiAndSandrone(player.getUniqueId())) {
+                player.sendMessage(Component.text("Yui dan Sandrone hanya untuk pemiliknya.",
+                        NamedTextColor.RED));
+                return true;
+            }
             int changed = mode == CompanionManager.FollowMode.CLOSE
                     ? manager.callClose(player, target)
                     : manager.callFollow(player, target);
@@ -448,6 +493,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 }
                 player.sendMessage(Component.text("Pilih siapa: /" + commandLabel
                         + " [yui|sandrone|semua]", NamedTextColor.YELLOW));
+                return true;
+            }
+            if (!mayUseYuiAndSandrone(player.getUniqueId())) {
+                player.sendMessage(Component.text("Yui dan Sandrone hanya untuk pemiliknya.",
+                        NamedTextColor.RED));
                 return true;
             }
             int changed = manager.setAttacking(player, target, enabled);
