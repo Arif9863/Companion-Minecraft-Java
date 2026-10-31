@@ -45,6 +45,9 @@ there yourself, or rely on the Maven fallback above.
 - `/ikut [yui|sandrone|semua]` — switch them back to **FOLLOW** mode.
 - `/serang [yui|sandrone|semua]` — let the companions fight hostile mobs for you.
 - `/tahan [yui|sandrone|semua]` — hold their strikes again.
+
+These four commands cover **Yui and Sandrone only**. `semua` means the pair, never Eris — she has
+her own commands below, and `/serang eris` is refused with a pointer to them.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
 - `/eris` (alias `/eris-chan`) — call Eris, the standalone companion.

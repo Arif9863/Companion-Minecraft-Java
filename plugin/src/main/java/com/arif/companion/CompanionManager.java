@@ -2251,6 +2251,10 @@ public final class CompanionManager {
             if (!archetype.equalsIgnoreCase("semua") && !archetype.equalsIgnoreCase(key.archetype())) {
                 continue;
             }
+            // "semua" means the Yui–Sandrone pair only; Eris has her own commands.
+            if (archetype.equalsIgnoreCase("semua") && !PAIRED_ARCHETYPES.contains(key.archetype())) {
+                continue;
+            }
             FollowState state = entry.getValue();
             state.attackEnabled = enabled;
             if (!enabled) {
@@ -2441,7 +2445,17 @@ public final class CompanionManager {
     }
 
     /**
-     * Sets the owner's companions to CLOSE mode, which remains until /ikut is used.
+     * The companions the shared {@code /ikut}, {@code /kesini}, {@code /serang} and {@code /tahan}
+     * commands may touch.
+     *
+     * <p>Eris is deliberately excluded. She is a standalone companion with her own commands, so
+     * the pair-wide commands must never reach her — otherwise {@code /serang} would quietly arm
+     * a companion the owner never addressed.</p>
+     */
+    private static final List<String> PAIRED_ARCHETYPES = List.of("yui", "sandrone");
+
+    /**
+     * Turns the owner's companions to CLOSE mode, which remains until /ikut is used.
      *
      * @param archetype "yui", "sandrone", or "semua" for both
      * @return how many companions were actually switched
@@ -2468,6 +2482,10 @@ public final class CompanionManager {
                 continue;
             }
             if (!archetype.equalsIgnoreCase("semua") && !archetype.equalsIgnoreCase(key.archetype())) {
+                continue;
+            }
+            // "semua" means the Yui–Sandrone pair only; Eris has her own commands.
+            if (archetype.equalsIgnoreCase("semua") && !PAIRED_ARCHETYPES.contains(key.archetype())) {
                 continue;
             }
             FollowState state = entry.getValue();

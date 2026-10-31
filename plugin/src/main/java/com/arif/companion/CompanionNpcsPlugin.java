@@ -389,6 +389,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             }
             String target = args.length == 0 ? "semua" : args[0].toLowerCase(Locale.ROOT);
             if (!target.equals("yui") && !target.equals("sandrone") && !target.equals("semua")) {
+                if (target.equals("eris")) {
+                    player.sendMessage(Component.text("Eris punya command sendiri: /eris "
+                            + label.toLowerCase(Locale.ROOT), NamedTextColor.YELLOW));
+                    return true;
+                }
                 player.sendMessage(Component.text("Pilih siapa: /" + commandLabel
                         + " [yui|sandrone|semua]", NamedTextColor.YELLOW));
                 return true;
@@ -405,7 +410,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             }
             return true;
         }
-
         @Override
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
@@ -437,6 +441,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             }
             String target = args.length == 0 ? "semua" : args[0].toLowerCase(Locale.ROOT);
             if (!target.equals("yui") && !target.equals("sandrone") && !target.equals("semua")) {
+                if (target.equals("eris")) {
+                    player.sendMessage(Component.text("Eris punya command sendiri: /eris serang"
+                            + " atau /eris tahan", NamedTextColor.YELLOW));
+                    return true;
+                }
                 player.sendMessage(Component.text("Pilih siapa: /" + commandLabel
                         + " [yui|sandrone|semua]", NamedTextColor.YELLOW));
                 return true;

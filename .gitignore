@@ -38,6 +38,8 @@ Paper/Paper26.3/plugins/bStats/
 Paper/Paper26.3/plugins/spark/
 Paper/Paper26.3/plugins/CompanionNPCs/config.yml
 Paper/Paper26.3/plugins/CompanionNPCs/modes.yml
+Paper/Paper26.3/plugins/CompanionNPCs/eris-owner.yml
+Paper/Paper26.3/plugins/CompanionNPCs/eris-pouch.yml
 
 # Skript's own config and examples; we only keep our companion scripts.
 Paper/Paper26.3/plugins/Skript/config.sk
