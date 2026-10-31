@@ -3,6 +3,8 @@ yui:
   skin-url: ""
 sandrone:
   skin-url: ""
+eris:
+  skin-url: ""
 
 # Comfort distance: the companion stops closing in and stands still when closer than this.
 # Yui stands on your left, Sandrone on your right, so they never crowd each other.

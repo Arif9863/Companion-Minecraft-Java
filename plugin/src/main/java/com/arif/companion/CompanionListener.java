@@ -9,7 +9,11 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
@@ -66,5 +70,52 @@ public final class CompanionListener implements Listener {
                 && mannequin.getScoreboardTags().contains(CompanionManager.TAG)) {
             event.setCancelled(true);
         }
+    }
+
+    /**
+     * Right-clicking Eris opens her pouch — but only for the player who owns her.
+     *
+     * <p>Everybody else gets Eris's own refusal instead of the bag, so her storage never leaks
+     * to another player on the server.</p>
+     */
+    @EventHandler
+    public void onErisInteract(PlayerInteractEntityEvent event) {
+        if (!(event.getRightClicked() instanceof Mannequin mannequin)
+                || !mannequin.getScoreboardTags().contains("companion_eris")) {
+            return;
+        }
+        event.setCancelled(true);
+        Player player = event.getPlayer();
+        if (!plugin.getManager().canOpenErisPouch(player)) {
+            plugin.getManager().denyEris(player);
+            return;
+        }
+        plugin.getManager().openErisPouch(player);
+    }
+
+    /** Remembers which mob Eris hit, so the kill can be credited to her owner. */
+    @EventHandler
+    public void onEntityDamage(EntityDamageByEntityEvent event) {
+        if (!(event.getDamager() instanceof Mannequin mannequin)
+                || !mannequin.getScoreboardTags().contains("companion_eris")) {
+            return;
+        }
+        plugin.getManager().noteErisDamage(event.getEntity().getUniqueId(),
+                mannequin.getUniqueId());
+    }
+
+    /** Counts a mob killed by Eris, which is what unlocks her Strength I. */
+    @EventHandler
+    public void onEntityDeath(EntityDeathEvent event) {
+        plugin.getManager().recordErisKill(event.getEntity().getUniqueId());
+    }
+
+    /** Saves Eris's pouch when its inventory closes. */
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (!(event.getPlayer() instanceof Player player)) {
+            return;
+        }
+        plugin.getManager().saveErisPouch(player, event.getInventory());
     }
 }

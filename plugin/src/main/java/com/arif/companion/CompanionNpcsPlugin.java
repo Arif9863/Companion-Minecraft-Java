@@ -28,6 +28,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private PackHttpServer packServer;
     private String yuiSkinUrl;
     private String sandroneSkinUrl;
+    private String erisSkinUrl;
     private double comfortDistance;
     private double closeDistance;
     private int teleportDistance;
@@ -54,6 +55,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("serang", new AttackCommand(true));
         registerCommand("tahan", new AttackCommand(false));
         registerCommand("companionnpc", new AdminCommand());
+        registerCommand("eris", new ErisCommand());
         listener = new CompanionListener(this);
         Bukkit.getPluginManager().registerEvents(listener, this);
 
@@ -106,6 +108,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         FileConfiguration config = getConfig();
         yuiSkinUrl = config.getString("yui.skin-url", "");
         sandroneSkinUrl = config.getString("sandrone.skin-url", "");
+        erisSkinUrl = config.getString("eris.skin-url", "");
         // Standing distance: how far away a companion settles while the owner is idle.
         comfortDistance = config.getDouble("comfort-distance", 3.0);
         // Close distance: how near they come when the owner calls them with /kesini.
@@ -161,7 +164,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     }
 
     String skinUrl(String archetype) {
-        return archetype.equals("yui") ? yuiSkinUrl : sandroneSkinUrl;
+        return switch (archetype) {
+            case "yui" -> yuiSkinUrl;
+            case "eris" -> erisSkinUrl;
+            default -> sandroneSkinUrl;
+        };
     }
 
     int followDistance() {
@@ -247,10 +254,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
     void setSkinUrl(String archetype, String url) {
         String safeUrl = url == null ? "" : url.trim();
-        if (archetype.equals("yui")) {
-            yuiSkinUrl = safeUrl;
-        } else {
-            sandroneSkinUrl = safeUrl;
+        switch (archetype) {
+            case "yui" -> yuiSkinUrl = safeUrl;
+            case "eris" -> erisSkinUrl = safeUrl;
+            default -> sandroneSkinUrl = safeUrl;
         }
         getConfig().set(archetype + ".skin-url", safeUrl);
         saveConfig();
@@ -452,6 +459,94 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
                 List<String> options = new ArrayList<>(List.of("yui", "sandrone", "semua"));
+                String prefix = args[0].toLowerCase(Locale.ROOT);
+                options.removeIf(option -> !option.startsWith(prefix));
+                return options;
+            }
+            return List.of();
+        }
+    }
+
+    /**
+     * The {@code /eris} command.
+     *
+     * <p>Eris is a standalone companion with one permanent owner: whoever calls her first keeps
+     * her. Everyone else is refused with Eris's own deny line, and only the owner can change
+     * her behaviour afterwards.</p>
+     */
+    private final class ErisCommand implements CommandExecutor, TabCompleter {
+        private static final List<String> SUBCOMMANDS =
+                List.of("ikut", "kesini", "serang", "tahan", "off");
+
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage(Component.text("This command can only be used by a player.", NamedTextColor.RED));
+                return true;
+            }
+            if (!player.hasPermission("companion.npc.eris")) {
+                player.sendMessage(Component.text("Kamu tidak punya izin memakai Eris.", NamedTextColor.RED));
+                return true;
+            }
+            // Eris belongs to one player for good. A second caller gets Eris's own refusal.
+            if (manager.erisClaimed() && !manager.isErisOwner(player.getUniqueId())) {
+                manager.denyEris(player);
+                return true;
+            }
+            if (args.length == 0) {
+                if (!manager.claimEris(player)) {
+                    manager.denyEris(player);
+                    return true;
+                }
+                manager.spawn(player, "eris");
+                player.sendMessage(Component.text("Eris sekarang mengikuti Ferdi-Kun.", NamedTextColor.RED));
+                return true;
+            }
+
+            String option = args[0].toLowerCase(Locale.ROOT);
+            switch (option) {
+                case "off", "remove", "clear" -> {
+                    manager.despawn(player, "eris");
+                    player.sendMessage(Component.text("Eris disingkirkan.", NamedTextColor.RED));
+                }
+                case "ikut" -> applyErisMode(player, CompanionManager.FollowMode.FOLLOW, "Ikut");
+                case "kesini" -> applyErisMode(player, CompanionManager.FollowMode.CLOSE, "Kesini");
+                case "serang" -> applyErisCombat(player, true);
+                case "tahan" -> applyErisCombat(player, false);
+                default -> player.sendMessage(Component.text(
+                        "Usage: /" + label + " [ikut|kesini|serang|tahan|off]", NamedTextColor.YELLOW));
+            }
+            return true;
+        }
+
+        private void applyErisMode(Player player, CompanionManager.FollowMode mode, String name) {
+            int changed = mode == CompanionManager.FollowMode.CLOSE
+                    ? manager.callClose(player, "eris")
+                    : manager.callFollow(player, "eris");
+            if (changed == 0) {
+                player.sendMessage(Component.text("Eris belum dipanggil. Gunakan /eris dulu.",
+                        NamedTextColor.YELLOW));
+                return;
+            }
+            player.sendMessage(Component.text("Mode " + name + " aktif untuk Eris.", NamedTextColor.GREEN));
+        }
+
+        private void applyErisCombat(Player player, boolean enabled) {
+            int changed = manager.setAttacking(player, "eris", enabled);
+            if (changed == 0) {
+                player.sendMessage(Component.text("Eris belum dipanggil. Gunakan /eris dulu.",
+                        NamedTextColor.YELLOW));
+                return;
+            }
+            player.sendMessage(enabled
+                    ? Component.text("Eris siap bertarung untuk Ferdi-Kun.", NamedTextColor.GREEN)
+                    : Component.text("Eris menyimpan pedangnya.", NamedTextColor.GREEN));
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+            if (args.length == 1) {
+                List<String> options = new ArrayList<>(SUBCOMMANDS);
                 String prefix = args[0].toLowerCase(Locale.ROOT);
                 options.removeIf(option -> !option.startsWith(prefix));
                 return options;

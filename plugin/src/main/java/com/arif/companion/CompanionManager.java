@@ -22,6 +22,10 @@ import org.bukkit.entity.EntityType;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.profile.PlayerTextures;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -56,6 +60,65 @@ public final class CompanionManager {
     private static final String SKIN_NAMESPACE = "companion";
 
     private record CompanionKey(UUID ownerId, String archetype) {}
+
+    /** Every companion archetype the plugin knows about. */
+    private static final List<String> ARCHETYPES = List.of("yui", "sandrone", "eris");
+
+    /** Session kill/potion/dialogue state for Eris, keyed to her permanent owner. */
+    private static final class ErisState {
+        private final UUID ownerId;
+        private int killCount;
+        private boolean strengthGranted;
+        private long lastSpeedTick = Long.MIN_VALUE;
+        private long lastDialogueTick = Long.MIN_VALUE;
+        private long lastIdleTick = Long.MIN_VALUE;
+        private long lastKillTick = Long.MIN_VALUE;
+        private long lastSupportTick = Long.MIN_VALUE;
+        private long lastFollowupTick = Long.MIN_VALUE;
+        /** Tick at which a support line was spoken, marking the start of the follow-up window. */
+        private long lastSupportSequenceTick = Long.MIN_VALUE;
+        private String lastIdleLine;
+        private String lastKillLine;
+        private String lastSupportLine;
+        private String lastFollowupLine;
+
+        private ErisState(UUID ownerId) {
+            this.ownerId = ownerId;
+        }
+    }
+
+    private static final long ERIS_SPEED_COOLDOWN_TICKS = 100L;
+    private static final int ERIS_SPEED_DURATION_TICKS = 200;
+    private static final int ERIS_STRENGTH_DURATION_TICKS = 300;
+    private static final long ERIS_DIALOGUE_GLOBAL_COOLDOWN_TICKS = 100L;
+    private static final long ERIS_IDLE_COOLDOWN_TICKS = 1200L;
+    private static final long ERIS_KILL_COOLDOWN_TICKS = 200L;
+    private static final long ERIS_SUPPORT_COOLDOWN_TICKS = 600L;
+    private static final long ERIS_FOLLOWUP_COOLDOWN_TICKS = 600L;
+
+    private static final List<String> ERIS_IDLE_LINES = List.of(
+            "Ferdi-Kun, kalau cuma berdiri terus, musuhnya keburu bosan!",
+            "Hmph. Lagi mikirin sesuatu, atau memang sengaja bikin aku menunggu?",
+            "Kita sudah siap. Tinggal bilang mau ke mana.",
+            "Jangan lengah. Dunia ini nggak bakal berhenti bergerak cuma karena kita diam.",
+            "Kalau capek, bilang saja. Tapi jangan harap aku menggendongmu!",
+            "Aku mencium bau monster... atau itu cuma bau makanan?",
+            "Ayo, Ferdi-Kun. Aku ingin menguji pedangku!",
+            "Kau aman di dekatku. Jadi, berhenti pasang wajah khawatir itu."
+    );
+    private static final List<String> ERIS_KILL_LINES = List.of(
+            "Bagus! Begitu caranya—jangan beri mereka kesempatan!",
+            "Hah! Lumayan, Ferdi-Kun. Tapi jangan sampai besar kepala!"
+    );
+    private static final List<String> ERIS_SUPPORT_LINES = List.of(
+            "Minggir, Ferdi-Kun! Biar aku yang membuka jalan!",
+            "Aku di sini! Jangan berani menyentuhnya!"
+    );
+    private static final List<String> ERIS_FOLLOWUP_LINES = List.of(
+            "Jangan salah paham—aku cuma nggak mau kehilangan rekan bertarung yang lumayan!"
+    );
+    private static final String ERIS_DENY_LINE =
+            "Hmph. Jangan panggil-panggil aku! Aku cuma ikut Ferdi-Kun—bukan milikmu!";
 
     /**
      * The two standing behaviours a companion can have.
@@ -335,6 +398,23 @@ public final class CompanionManager {
      */
     private final Map<CompanionKey, FollowMode> savedModes = new HashMap<>();
     /**
+     * Eris's permanent owner.
+     *
+     * <p>Eris is a standalone companion: whoever calls her first keeps her, and the bond does not
+     * expire. A second player calling {@code /eris} afterwards is refused with Eris's own deny
+     * line, and only the owner can change her behaviour or open her pouch.</p>
+     */
+    private UUID erisOwnerId;
+    /** Per-owner Eris session state: kills, potion cooldowns, and dialogue timing. */
+    private final Map<UUID, ErisState> erisStates = new HashMap<>();
+    /**
+     * Mobs Eris recently hit, mapped to the owner who gets the kill credit.
+     *
+     * <p>A mannequin's final blow is invisible to the death event, so the damage is remembered
+     * here and confirmed when the mob dies.</p>
+     */
+    private final Map<UUID, UUID> erisDamageTracker = new HashMap<>();
+    /**
      * Doors any companion currently holds open, shared across all companions so the second one
      * walking through a doorway doesn't fight the first over who closes it.
      */
@@ -343,6 +423,199 @@ public final class CompanionManager {
     public CompanionManager(CompanionNpcsPlugin plugin) {
         this.plugin = plugin;
         loadSavedModes();
+        loadErisOwner();
+    }
+
+    /**
+     * Loads Eris's permanent owner from {@code plugins/CompanionNPCs/eris-owner.yml}.
+     *
+     * <p>The bond survives a restart: whoever called Eris first keeps her, so the owner is
+     * written to disk as soon as she is claimed.</p>
+     */
+    private void loadErisOwner() {
+        File file = new File(plugin.getDataFolder(), "eris-owner.yml");
+        if (!file.isFile()) {
+            return;
+        }
+        FileConfiguration config = YamlConfiguration.loadConfiguration(file);
+        String value = config.getString("owner");
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        try {
+            erisOwnerId = UUID.fromString(value.trim());
+        } catch (IllegalArgumentException ex) {
+            plugin.getLogger().warning("Ignoring invalid Eris owner UUID: " + value);
+        }
+    }
+
+    /** Persists Eris's owner so the bond survives a restart. */
+    private void saveErisOwner() {
+        File file = new File(plugin.getDataFolder(), "eris-owner.yml");
+        FileConfiguration config = new YamlConfiguration();
+        if (erisOwnerId != null) {
+            config.set("owner", erisOwnerId.toString());
+        }
+        try {
+            config.save(file);
+        } catch (IOException ex) {
+            plugin.getLogger().log(Level.SEVERE, "Could not save Eris owner to " + file, ex);
+        }
+    }
+
+    /** Whether the given player is allowed to command Eris. */
+    public boolean isErisOwner(UUID playerId) {
+        return erisOwnerId != null && erisOwnerId.equals(playerId);
+    }
+
+    /** Whether Eris has already been claimed by somebody. */
+    public boolean erisClaimed() {
+        return erisOwnerId != null;
+    }
+
+    /**
+     * Claims Eris for a player, unless somebody else already owns her.
+     *
+     * @return true when the claim succeeded
+     */
+    public boolean claimEris(Player owner) {
+        if (erisOwnerId != null && !erisOwnerId.equals(owner.getUniqueId())) {
+            return false;
+        }
+        if (erisOwnerId == null) {
+            erisOwnerId = owner.getUniqueId();
+            saveErisOwner();
+        }
+        erisStates.computeIfAbsent(erisOwnerId, ErisState::new);
+        return true;
+    }
+
+    /** The Eris session state for a player, created on first use. */
+    private ErisState erisState(UUID ownerId) {
+        return erisStates.computeIfAbsent(ownerId, ErisState::new);
+    }
+
+    /**
+     * Eris's special behaviour: the potion buffs she grants her owner, and her dialogue.
+     *
+     * <p>Eris is a support fighter. While she is actively helping — swinging at a hostile or
+     * closing on one — she refreshes Speed I on her owner. Once she has taken two kills she grants
+     * Strength I as well, once per session.</p>
+     */
+    private void updateErisBehaviour(Player owner, FollowState state, boolean helping,
+                                     boolean idle, long currentTick) {
+        if (!"eris".equals(state.archetype) || !owner.isOnline()) {
+            return;
+        }
+        ErisState eris = erisState(owner.getUniqueId());
+        if (helping && (eris.lastSpeedTick == Long.MIN_VALUE
+                || currentTick - eris.lastSpeedTick >= ERIS_SPEED_COOLDOWN_TICKS)) {
+            eris.lastSpeedTick = currentTick;
+            owner.addPotionEffect(new PotionEffect(PotionEffectType.SPEED,
+                    ERIS_SPEED_DURATION_TICKS, 0, true, false, true));
+            String line = speakEris(owner, eris, ERIS_SUPPORT_LINES, eris.lastSupportLine,
+                    ERIS_SUPPORT_COOLDOWN_TICKS, eris.lastSupportTick, false);
+            if (line != null) {
+                eris.lastSupportTick = currentTick;
+                eris.lastSupportLine = line;
+                eris.lastSupportSequenceTick = currentTick;
+            }
+        }
+        if (!helping && eris.lastSupportSequenceTick != Long.MIN_VALUE
+                && currentTick - eris.lastSupportSequenceTick <= ERIS_FOLLOWUP_COOLDOWN_TICKS) {
+            String line = speakEris(owner, eris, ERIS_FOLLOWUP_LINES, eris.lastFollowupLine,
+                    ERIS_FOLLOWUP_COOLDOWN_TICKS, eris.lastFollowupTick, false);
+            if (line != null) {
+                eris.lastFollowupTick = currentTick;
+                eris.lastFollowupLine = line;
+                eris.lastSupportSequenceTick = Long.MIN_VALUE;
+            }
+        }
+        if (idle && (eris.lastIdleTick == Long.MIN_VALUE
+                || currentTick - eris.lastIdleTick >= ERIS_IDLE_COOLDOWN_TICKS)) {
+            String line = speakEris(owner, eris, ERIS_IDLE_LINES, eris.lastIdleLine,
+                    ERIS_IDLE_COOLDOWN_TICKS, eris.lastIdleTick, false);
+            if (line != null) {
+                eris.lastIdleTick = currentTick;
+                eris.lastIdleLine = line;
+            }
+        }
+    }
+
+    /**
+     * Sends a dialogue line only if both the category cooldown and the shared anti-spam
+     * cooldown pass.
+     *
+     * @return the selected line, or null when a cooldown blocked it
+     */
+    private String speakEris(Player owner, ErisState eris, List<String> lines, String previous,
+                             long categoryCooldown, long lastCategoryTick, boolean killLine) {
+        long now = Bukkit.getCurrentTick();
+        if (lastCategoryTick != Long.MIN_VALUE && now - lastCategoryTick < categoryCooldown) {
+            return null;
+        }
+        if (eris.lastDialogueTick != Long.MIN_VALUE
+                && now - eris.lastDialogueTick < ERIS_DIALOGUE_GLOBAL_COOLDOWN_TICKS) {
+            return null;
+        }
+        String selected = lines.get((int) (Math.random() * lines.size()));
+        if (lines.size() > 1 && selected.equals(previous)) {
+            selected = lines.get((lines.indexOf(selected) + 1) % lines.size());
+        }
+        eris.lastDialogueTick = now;
+        owner.sendMessage(Component.text("[Eris] " + selected, NamedTextColor.RED));
+        return selected;
+    }
+
+    /**
+     * Remembers that Eris damaged a mob, so the kill can be credited to her owner.
+     *
+     * <p>The killer of a mob is only ever a player, so a mannequin's final blow is not visible
+     * through {@code getKiller()}. The damage event is the reliable place to notice that Eris was
+     * the one who hit it; the death event then confirms it.</p>
+     */
+    public void noteErisDamage(UUID mobId, UUID damagerId) {
+        for (Map.Entry<CompanionKey, UUID> entry : ownerToNpc.entrySet()) {
+            if ("eris".equals(entry.getKey().archetype()) && damagerId.equals(entry.getValue())) {
+                erisDamageTracker.put(mobId, entry.getKey().ownerId());
+                return;
+            }
+        }
+    }
+
+    /** Increment Eris's kill counter when a mob she struck dies. */
+    public void recordErisKill(UUID mobId) {
+        UUID ownerId = erisDamageTracker.remove(mobId);
+        if (ownerId == null) {
+            return;
+        }
+        Player owner = Bukkit.getPlayer(ownerId);
+        if (owner == null || !owner.isOnline()) {
+            return;
+        }
+        ErisState eris = erisState(owner.getUniqueId());
+        eris.killCount++;
+        String line = speakEris(owner, eris, ERIS_KILL_LINES, eris.lastKillLine,
+                ERIS_KILL_COOLDOWN_TICKS, eris.lastKillTick, false);
+        if (line != null) {
+            eris.lastKillTick = Bukkit.getCurrentTick();
+            eris.lastKillLine = line;
+        }
+        if (eris.killCount >= 2 && !eris.strengthGranted) {
+            eris.strengthGranted = true;
+            owner.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,
+                    ERIS_STRENGTH_DURATION_TICKS, 0, true, false, true));
+        }
+    }
+
+    /** Send Eris's deny line to any non-owner who tries to invoke her. */
+    public void denyEris(Player player) {
+        player.sendMessage(Component.text("[Eris] " + ERIS_DENY_LINE, NamedTextColor.RED));
+    }
+
+    /** Returns Eris's permanent owner UUID, or null before she has been claimed. */
+    public UUID erisOwnerId() {
+        return erisOwnerId;
     }
 
     /** Loads modes previously chosen by a player from plugins/CompanionNPCs/modes.yml. */
@@ -360,7 +633,7 @@ public final class CompanionManager {
                 plugin.getLogger().warning("Ignoring invalid player UUID in modes.yml: " + ownerId);
                 continue;
             }
-            for (String archetype : List.of("yui", "sandrone")) {
+            for (String archetype : ARCHETYPES) {
                 String value = config.getString(ownerId + "." + archetype);
                 if (value == null) {
                     continue;
@@ -444,7 +717,7 @@ public final class CompanionManager {
     private void applySkin(Mannequin npc, String archetype, String ownerName) {
         String url = plugin.skinUrl(archetype);
         Key packKey = plugin.packSkinKey(archetype);
-        PlayerTextures.SkinModel model = archetype.equals("yui")
+        PlayerTextures.SkinModel model = archetype.equals("yui") || archetype.equals("eris")
                 ? PlayerTextures.SkinModel.SLIM
                 : PlayerTextures.SkinModel.CLASSIC;
 
@@ -463,9 +736,11 @@ public final class CompanionManager {
 
     /** Builds the floating name shown above the companion. */
     private static Component nameOf(String archetype) {
-        return archetype.equals("yui")
-                ? Component.text("Yui", NamedTextColor.LIGHT_PURPLE)
-                : Component.text("Sandrone", NamedTextColor.AQUA);
+        return switch (archetype) {
+            case "yui" -> Component.text("Yui", NamedTextColor.LIGHT_PURPLE);
+            case "eris" -> Component.text("Eris", NamedTextColor.RED);
+            default -> Component.text("Sandrone", NamedTextColor.AQUA);
+        };
     }
 
     /** Returns a spot just above the given location, nudged out of any solid block. */
@@ -546,6 +821,36 @@ public final class CompanionManager {
                 state.closeTargetTick = Bukkit.getCurrentTick();
             }
             return state.closeTarget.clone();
+        }
+
+        // Eris is a standalone companion: she has no partner to pair up with, so she holds a
+        // neutral spot behind the owner instead of claiming the left or right side.
+        if ("eris".equalsIgnoreCase(state.archetype)) {
+            double yaw = Math.toRadians(state.formationYaw);
+            Location behind = new Location(world,
+                    ownerLocation.getX() + Math.sin(yaw) * SIDE_FORMATION_OFFSET,
+                    ownerLocation.getY(),
+                    ownerLocation.getZ() - Math.cos(yaw) * SIDE_FORMATION_OFFSET);
+            if (isFreeForCompanion(behind)) {
+                state.formationSide = 0.0;
+                state.formationIsFallback = false;
+                return behind;
+            }
+            // Behind is blocked: fall back to either side rather than standing in the owner.
+            Location left = sideSpotAt(ownerLocation, state.formationYaw, 1.0);
+            if (isFreeForCompanion(left)) {
+                state.formationSide = 1.0;
+                state.formationIsFallback = true;
+                return left;
+            }
+            Location right = sideSpotAt(ownerLocation, state.formationYaw, -1.0);
+            if (isFreeForCompanion(right)) {
+                state.formationSide = -1.0;
+                state.formationIsFallback = true;
+                return right;
+            }
+            state.formationSide = 0.0;
+            return behind;
         }
 
         // The side this companion naturally owns: Yui left, Sandrone right.
@@ -800,6 +1105,12 @@ public final class CompanionManager {
     private void updateDangerMarkers(Mannequin npc, Player owner, FollowState state,
                                     long currentTick) {
         if (!state.attackEnabled || !owner.isOnline()) {
+            clearDangerMarkers(state);
+            return;
+        }
+        // Eris is standalone: she does not inherit either partner's marker duty, so she marks
+        // nothing at all rather than duplicating one of them.
+        if ("eris".equalsIgnoreCase(state.archetype)) {
             clearDangerMarkers(state);
             return;
         }
@@ -1088,6 +1399,10 @@ public final class CompanionManager {
             }
             // Defensive markers only exist while combat mode is on.
             updateDangerMarkers(npc, owner, state, currentTick);
+            // Eris is a support fighter: while she is fighting next to her owner she keeps
+            // refreshing Speed on them, and she talks in her own voice.
+            updateErisBehaviour(owner, state, attackTarget != null, attackTarget == null,
+                    currentTick);
             double targetDx = targetSpot.getX() - npcLocation.getX();
             double targetDz = targetSpot.getZ() - npcLocation.getZ();
             double targetDistance = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
@@ -2016,6 +2331,51 @@ public final class CompanionManager {
         state.openedDoors.clear();
     }
 
+    /** Creates the Eris pouch inventory, or restores the owner's saved pouch. */
+    public void openErisPouch(Player owner) {
+        if (!isErisOwner(owner.getUniqueId())) {
+            return;
+        }
+        File file = new File(plugin.getDataFolder(), "eris-pouch.yml");
+        FileConfiguration config = YamlConfiguration.loadConfiguration(file);
+        String path = owner.getUniqueId().toString();
+        ErisPouchHolder pouch = new ErisPouchHolder(owner.getUniqueId());
+        Inventory inventory = pouch.getInventory();
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            ItemStack item = config.getItemStack(path + "." + slot);
+            if (item != null) {
+                inventory.setItem(slot, item);
+            }
+        }
+        owner.openInventory(inventory);
+    }
+
+    /** Saves only an ErisPouchHolder inventory, never another chest the owner happens to close. */
+    public void saveErisPouch(Player owner, Inventory inventory) {
+        if (!isErisOwner(owner.getUniqueId()) || inventory == null
+                || !(inventory.getHolder() instanceof ErisPouchHolder holder)
+                || !holder.belongsTo(owner)) {
+            return;
+        }
+        File file = new File(plugin.getDataFolder(), "eris-pouch.yml");
+        FileConfiguration config = YamlConfiguration.loadConfiguration(file);
+        String path = owner.getUniqueId().toString();
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            ItemStack item = inventory.getItem(slot);
+            config.set(path + "." + slot, item == null || item.getType().isAir() ? null : item);
+        }
+        try {
+            config.save(file);
+        } catch (IOException ex) {
+            plugin.getLogger().log(Level.SEVERE, "Could not save Eris pouch to " + file, ex);
+        }
+    }
+
+    /** Whether the given player is Eris's owner and may open her pouch. */
+    public boolean canOpenErisPouch(Player player) {
+        return isErisOwner(player.getUniqueId());
+    }
+
     /** Removes the companion of the given archetype owned by the given player, if any. */
     public void despawn(Player owner, String archetype) {
         CompanionKey key = new CompanionKey(owner.getUniqueId(), archetype.toLowerCase(Locale.ROOT));
@@ -2032,7 +2392,7 @@ public final class CompanionManager {
 
     /** Removes every companion owned by the given player, across all archetypes. */
     public void despawn(Player owner) {
-        for (String archetype : List.of("yui", "sandrone")) {
+        for (String archetype : ARCHETYPES) {
             despawn(owner, archetype);
         }
     }

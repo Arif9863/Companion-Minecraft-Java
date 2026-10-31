@@ -35,6 +35,11 @@ commands:
     description: Tell your companions to hold their strikes
     usage: /tahan [yui|sandrone|semua]
     permission: companion.npc.attack
+  eris:
+    aliases: [eris-chan]
+    description: Call Eris, the standalone companion with one permanent owner
+    usage: /eris [ikut|kesini|serang|tahan|off]
+    permission: companion.npc.eris
 permissions:
   companion.npc.yui:
     default: true
@@ -45,4 +50,6 @@ permissions:
   companion.npc.close:
     default: true
   companion.npc.attack:
+    default: true
+  companion.npc.eris:
     default: true

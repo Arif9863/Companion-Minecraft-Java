@@ -47,8 +47,30 @@ there yourself, or rely on the Maven fallback above.
 - `/tahan [yui|sandrone|semua]` — hold their strikes again.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
+- `/eris` (alias `/eris-chan`) — call Eris, the standalone companion.
+- `/eris ikut`, `/eris kesini`, `/eris serang`, `/eris tahan`, `/eris off` — control her.
 
 Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system. Companion behavior stays command-driven; no extra GUI or control item is required.
+
+## Eris (standalone companion)
+
+Eris is a companion of her own, not a third member of the Yui–Sandrone pair.
+
+- **One permanent owner.** Whoever calls `/eris` first keeps her for good; the bond is stored in
+  `plugins/CompanionNPCs/eris-owner.yml` and survives a restart. Anybody else who calls her gets
+  her refusal: *"Hmph. Jangan panggil-panggil aku! Aku cuma ikut Ferdi-Kun—bukan milikmu!"* Only
+  the owner can change her behaviour afterwards.
+- **Neutral formation.** She has no partner to pair up with, so in FOLLOW mode she stands behind
+  the owner instead of claiming the left or right side.
+- **Support fighter.** While she is fighting next to her owner she refreshes **Speed I** on them
+  every 5 seconds, and the buff lasts 10 seconds. After her **second kill** she also grants
+  **Strength I** for 15 seconds, once per session.
+- **Her own pouch.** Right-click Eris to open a private 27-slot bag, saved in
+  `plugins/CompanionNPCs/eris-pouch.yml`. Only the owner can open it; anybody else is refused.
+- **Her own voice.** Eris has 13 dialogue lines (8 idle, 2 kill, 2 support, 1 follow-up), sent
+  only to her owner. There are no voice files — the text alone carries her character.
+- **No danger markers.** The skeleton/creeper markers belong to Yui and Sandrone; Eris marks
+  nothing, so she never duplicates a partner's alert.
 
 ## Defensive melee (`/serang`)
 
