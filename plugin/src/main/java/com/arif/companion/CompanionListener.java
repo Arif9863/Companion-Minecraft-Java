@@ -86,7 +86,7 @@ public final class CompanionListener implements Listener {
         }
         event.setCancelled(true);
         Player player = event.getPlayer();
-        if (!plugin.getManager().canOpenErisPouch(player)) {
+        if (!plugin.getManager().canInteractWithEris(player, mannequin.getUniqueId())) {
             plugin.getManager().denyEris(player);
             return;
         }

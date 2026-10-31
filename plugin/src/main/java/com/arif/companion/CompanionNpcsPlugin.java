@@ -52,6 +52,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
      * off limits until a UUID is configured.</p>
      */
     private final Set<UUID> yuiSandroneAllowed = new HashSet<>();
+    /** The player Eris is reserved for; only they can claim her. */
+    private UUID erisOwner;
+    /** Players allowed to use Eris while she is still unclaimed. */
+    private final Set<UUID> erisTesters = new HashSet<>();
 
     /**
      * Whether the given player may use Yui and Sandrone.
@@ -61,6 +65,16 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
      */
     boolean mayUseYuiAndSandrone(UUID playerId) {
         return yuiSandroneAllowed.contains(playerId);
+    }
+
+    /** The player Eris is reserved for, or null when she is free for anybody to claim. */
+    UUID erisOwner() {
+        return erisOwner;
+    }
+
+    /** Players allowed to use Eris while nobody has claimed her yet. */
+    Set<UUID> erisTesters() {
+        return erisTesters;
     }
 
     @Override
@@ -125,6 +139,23 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         }
     }
 
+    /**
+     * Parses a UUID from the config, ignoring a blank entry and reporting a broken one.
+     *
+     * @return the UUID, or null when the value is blank or invalid
+     */
+    private UUID parseOptionalUuid(String value, String setting) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value.trim());
+        } catch (IllegalArgumentException ex) {
+            getLogger().warning("Ignoring invalid UUID in " + setting + ": " + value);
+            return null;
+        }
+    }
+
     private void readConfig() {
         FileConfiguration config = getConfig();
         yuiSandroneAllowed.clear();
@@ -139,6 +170,14 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 yuiSandroneAllowed.add(UUID.fromString(entry.trim()));
             } catch (IllegalArgumentException ex) {
                 getLogger().warning("Ignoring invalid UUID in companion-owners: " + entry);
+            }
+        }
+        erisOwner = parseOptionalUuid(config.getString("eris-owner", ""), "eris-owner");
+        erisTesters.clear();
+        for (String entry : config.getStringList("eris-testers")) {
+            UUID tester = parseOptionalUuid(entry, "eris-testers");
+            if (tester != null) {
+                erisTesters.add(tester);
             }
         }
         yuiSkinUrl = config.getString("yui.skin-url", "");
@@ -547,7 +586,12 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 player.sendMessage(Component.text("Kamu tidak punya izin memakai Eris.", NamedTextColor.RED));
                 return true;
             }
-            // Eris belongs to one player for good. A second caller gets Eris's own refusal.
+            // Eris is reserved: only her owner and, while she is still unclaimed, her testers.
+            if (!manager.mayUseEris(player.getUniqueId())) {
+                manager.denyEris(player);
+                return true;
+            }
+            // Once Eris belongs to somebody, nobody else may command her at all.
             if (manager.erisClaimed() && !manager.isErisOwner(player.getUniqueId())) {
                 manager.denyEris(player);
                 return true;

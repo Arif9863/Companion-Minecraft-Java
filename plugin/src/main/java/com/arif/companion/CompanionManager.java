@@ -405,6 +405,21 @@ public final class CompanionManager {
      * line, and only the owner can change her behaviour or open her pouch.</p>
      */
     private UUID erisOwnerId;
+    /**
+     * The player Eris is reserved for, taken from the config.
+     *
+     * <p>Only this player may call her while she has not been claimed yet, which is how the
+     * companion is handed to a specific friend without any player being able to take her by
+     * calling {@code /eris} first.</p>
+     */
+    private UUID erisDesignatedOwner;
+    /**
+     * Players allowed to use Eris while she is still unclaimed.
+     *
+     * <p>They lose access the moment the owner calls her, so a tester can try the companion
+     * out without being able to keep her.</p>
+     */
+    private final Set<UUID> erisTesters = new HashSet<>();
     /** Per-owner Eris session state: kills, potion cooldowns, and dialogue timing. */
     private final Map<UUID, ErisState> erisStates = new HashMap<>();
     /**
@@ -423,7 +438,20 @@ public final class CompanionManager {
     public CompanionManager(CompanionNpcsPlugin plugin) {
         this.plugin = plugin;
         loadSavedModes();
+        loadErisAccess();
         loadErisOwner();
+    }
+
+    /**
+     * Reads the Eris owner and tester lists from the plugin config.
+     *
+     * <p>The designated owner is the only player who may claim Eris; the testers may use her
+     * while she is still unclaimed.</p>
+     */
+    private void loadErisAccess() {
+        erisDesignatedOwner = plugin.erisOwner();
+        erisTesters.clear();
+        erisTesters.addAll(plugin.erisTesters());
     }
 
     /**
@@ -449,21 +477,29 @@ public final class CompanionManager {
         }
     }
 
-    /** Persists Eris's owner so the bond survives a restart. */
-    private void saveErisOwner() {
-        File file = new File(plugin.getDataFolder(), "eris-owner.yml");
-        FileConfiguration config = new YamlConfiguration();
+    /**
+     * Whether the given player is allowed to use Eris at all.
+     *
+     * <p>The designated owner always may. A tester may only while nobody has claimed Eris yet —
+     * once the owner has called her, the testers lose every Eris command, exactly as the owner
+     * asked. Everybody else is refused.</p>
+     */
+    public boolean mayUseEris(UUID playerId) {
         if (erisOwnerId != null) {
-            config.set("owner", erisOwnerId.toString());
+            return erisOwnerId.equals(playerId);
         }
-        try {
-            config.save(file);
-        } catch (IOException ex) {
-            plugin.getLogger().log(Level.SEVERE, "Could not save Eris owner to " + file, ex);
+        if (erisDesignatedOwner != null) {
+            return erisDesignatedOwner.equals(playerId);
         }
+        return erisTesters.contains(playerId);
     }
 
-    /** Whether the given player is allowed to command Eris. */
+    /**
+     * Whether the given player owns Eris right now.
+     *
+     * <p>This is the player who actually called her, not the designated owner from the config;
+     * only the caller can change her behaviour and open her pouch.</p>
+     */
     public boolean isErisOwner(UUID playerId) {
         return erisOwnerId != null && erisOwnerId.equals(playerId);
     }
@@ -476,18 +512,38 @@ public final class CompanionManager {
     /**
      * Claims Eris for a player, unless somebody else already owns her.
      *
-     * @return true when the claim succeeded
+     * <p>When a designated owner is configured, only that player takes ownership. A tester may
+     * still call Eris while she is unclaimed — they simply do not take her with them, so the
+     * owner can still claim her later.</p>
+     *
+     * @return true when the caller may have Eris, whether or not they claimed her
      */
     public boolean claimEris(Player owner) {
-        if (erisOwnerId != null && !erisOwnerId.equals(owner.getUniqueId())) {
-            return false;
+        if (erisOwnerId != null) {
+            return erisOwnerId.equals(owner.getUniqueId());
         }
-        if (erisOwnerId == null) {
-            erisOwnerId = owner.getUniqueId();
-            saveErisOwner();
+        if (erisDesignatedOwner != null && !erisDesignatedOwner.equals(owner.getUniqueId())) {
+            // A tester: Eris is hers to try out, but not hers to keep.
+            return erisTesters.contains(owner.getUniqueId());
         }
+        erisOwnerId = owner.getUniqueId();
+        saveErisOwner();
         erisStates.computeIfAbsent(erisOwnerId, ErisState::new);
         return true;
+    }
+
+    /** Persists Eris's owner so the bond survives a restart. */
+    private void saveErisOwner() {
+        File file = new File(plugin.getDataFolder(), "eris-owner.yml");
+        FileConfiguration config = new YamlConfiguration();
+        if (erisOwnerId != null) {
+            config.set("owner", erisOwnerId.toString());
+        }
+        try {
+            config.save(file);
+        } catch (IOException ex) {
+            plugin.getLogger().log(Level.SEVERE, "Could not save Eris owner to " + file, ex);
+        }
     }
 
     /** The Eris session state for a player, created on first use. */
@@ -2375,9 +2431,22 @@ public final class CompanionManager {
         }
     }
 
-    /** Whether the given player is Eris's owner and may open her pouch. */
+    /** Whether a player may open Eris's pouch. */
     public boolean canOpenErisPouch(Player player) {
         return isErisOwner(player.getUniqueId());
+    }
+
+    /**
+     * Right-click should only open the pouch for the permanent owner; designated owner UUID
+     * does not count as ownership until that player actually calls Eris.
+     */
+    public boolean canInteractWithEris(Player player, UUID erisEntityId) {
+        if (!isErisOwner(player.getUniqueId())) {
+            return false;
+        }
+        Entity eris = Bukkit.getEntity(erisEntityId);
+        return eris instanceof Mannequin mannequin
+                && mannequin.getScoreboardTags().contains("companion_eris");
     }
 
     /** Removes the companion of the given archetype owned by the given player, if any. */

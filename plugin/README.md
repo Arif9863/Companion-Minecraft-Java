@@ -65,10 +65,14 @@ Commands intentionally keep the `-npc` suffix so they do not replace the existin
 
 Eris is a companion of her own, not a third member of the Yui–Sandrone pair.
 
-- **One permanent owner.** Whoever calls `/eris` first keeps her for good; the bond is stored in
-  `plugins/CompanionNPCs/eris-owner.yml` and survives a restart. Anybody else who calls her gets
-  her refusal: *"Hmph. Jangan panggil-panggil aku! Aku cuma ikut Ferdi-Kun—bukan milikmu!"* Only
-  the owner can change her behaviour afterwards.
+- **One permanent owner.** `eris-owner` in the config names the player Eris is reserved for, and
+  only that player can call her and control her. The bond is stored in
+  `plugins/CompanionNPCs/eris-owner.yml` once she is claimed, and survives a restart. Anybody else
+  who calls her gets her refusal: *"Hmph. Jangan panggil-panggil aku! Aku cuma ikut Ferdi-Kun—bukan
+  milikmu!"* Only the owner can change her behaviour afterwards.
+- **Testers lose access.** `eris-testers` lists players who may use Eris while she is still
+  unclaimed, so a tester can try her out. As soon as the owner calls her, every tester command
+  stops working and only the owner is left.
 - **Neutral formation.** She has no partner to pair up with, so in FOLLOW mode she stands behind
   the owner instead of claiming the left or right side.
 - **Support fighter.** While she is fighting next to her owner she refreshes **Speed I** on them
