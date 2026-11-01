@@ -246,6 +246,21 @@ public final class CompanionManager {
      * back. Crossing faster means arriving sooner, while the jump is still high enough.</p>
      */
     private static final double PARKOUR_CLIMB_SPEED = 0.50;
+    /**
+     * Upward velocity of a jump onto a ledge one block higher.
+     *
+     * <p>Stronger than the plain parkour jump: the companion has to clear the lip of the ledge
+     * as well as the gap, and a plain jump peaks too close to the edge to do both at once.</p>
+     */
+    private static final double PARKOUR_CLIMB_JUMP_VELOCITY = 0.60;
+    /**
+     * Minimum upward velocity held while climbing onto a higher ledge.
+     *
+     * <p>Kept for a moment so the companion keeps rising while it crosses the gap, the way a
+     * player holds the jump key. Without it the jump peaks just short of the ledge and the
+     * companion slides back down.</p>
+     */
+    private static final double PARKOUR_CLIMB_GLIDE = 0.20;
     /** How many ticks the companion keeps its parkour speed while airborne over a gap. */
     private static final int PARKOUR_AIR_TICKS = 14;
     /**
@@ -1742,28 +1757,37 @@ public final class CompanionManager {
                 }
                 npc.setVelocity(new org.bukkit.util.Vector(vx, swimY, velocityZ));
             } else {
-                // Jump when the next waypoint is a step up the companion can clear.
-                double vy = npc.isOnGround() && wy > 0.4 ? 0.42 : npc.getVelocity().getY();
-                // Parkour: a gap in front has to be jumped, because walking into it means falling
-                // into the ravine. The jump is a real one: enough upward force to clear the gap
-                // while the horizontal speed carries the companion over.
-                if (npc.isOnGround() && vy <= 0.05 && isGapAhead(npc, npcLocation, wx, wz)) {
-                    vy = PARKOUR_JUMP_VELOCITY;
+                double vy = npc.getVelocity().getY();
+                // Parkour is checked first and takes priority over the ordinary step-up jump.
+                // When the far side of a gap is one block higher, the waypoint sits above the
+                // companion, so the step-up rule used to set the jump velocity before the gap
+                // check could look at it — and the companion jumped too small and fell in.
+                boolean gapAhead = npc.isOnGround() && isGapAhead(npc, npcLocation, wx, wz);
+                if (gapAhead) {
                     // Keep the sprint going while airborne: a walking pace cannot clear three
                     // blocks, so the companion would fall short of the far side.
                     state.parkourUntilTick = currentTick + PARKOUR_AIR_TICKS;
                     // A far side one block higher needs more forward speed: at the plain
                     // crossing speed the companion is still below the ledge when it arrives.
                     state.parkourClimb = isLandingHigher(npc, npcLocation, wx, wz);
+                    vy = state.parkourClimb
+                            ? PARKOUR_CLIMB_JUMP_VELOCITY : PARKOUR_JUMP_VELOCITY;
                     speed = state.parkourClimb ? PARKOUR_CLIMB_SPEED : PARKOUR_CROSS_SPEED;
                     vx = (wx / waypointDistance) * speed;
                     velocityZ = (wz / waypointDistance) * speed;
+                } else if (npc.isOnGround() && wy > 0.4) {
+                    // An ordinary one-block step up.
+                    vy = 0.42;
                 }
-                // Still airborne over the gap: keep the sprint speed so the jump lands.
+                // Still airborne over the gap: keep the sprint speed so the jump lands, and hold
+                // the climb so the companion clears the lip of a higher ledge.
                 if (currentTick < state.parkourUntilTick && !npc.isOnGround()) {
                     speed = state.parkourClimb ? PARKOUR_CLIMB_SPEED : PARKOUR_CROSS_SPEED;
                     vx = (wx / waypointDistance) * speed;
                     velocityZ = (wz / waypointDistance) * speed;
+                    if (state.parkourClimb && vy < PARKOUR_CLIMB_GLIDE) {
+                        vy = PARKOUR_CLIMB_GLIDE;
+                    }
                 }
                 npc.setVelocity(new org.bukkit.util.Vector(vx, vy, velocityZ));
             }
