@@ -238,6 +238,14 @@ public final class CompanionManager {
      * far slower, so it sprints for the duration of the jump instead of walking over the gap.</p>
      */
     private static final double PARKOUR_CROSS_SPEED = 0.34;
+    /**
+     * Horizontal speed used when the far side of the gap sits one block higher.
+     *
+     * <p>A jump that has to gain a block of height while crossing needs more forward speed: at
+     * the plain crossing speed the companion is still below the ledge when it arrives and falls
+     * back. Crossing faster means arriving sooner, while the jump is still high enough.</p>
+     */
+    private static final double PARKOUR_CLIMB_SPEED = 0.50;
     /** How many ticks the companion keeps its parkour speed while airborne over a gap. */
     private static final int PARKOUR_AIR_TICKS = 14;
     /**
@@ -248,6 +256,8 @@ public final class CompanionManager {
      * jump started late falls into the gap.</p>
      */
     private static final double GAP_LOOKAHEAD = 1.0;
+    /** How many blocks ahead the landing of a parkour jump is looked for. */
+    private static final int PARKOUR_LANDING_SEARCH = 4;
     /** How far beside the owner a companion appears when summoned or rescued. */
     private static final double SIDE_PLACEMENT_DISTANCE = 1.2;
     /** How far to the owner's left or right a companion stands while following. */
@@ -372,6 +382,8 @@ public final class CompanionManager {
         private long lastFootstepTick = Long.MIN_VALUE;
         /** Tick until which the companion keeps its parkour sprint while airborne over a gap. */
         private long parkourUntilTick = Long.MIN_VALUE;
+        /** Whether the far side of the current gap sits one block higher. */
+        private boolean parkourClimb;
         /** Whether the mannequin's current pose is swimming, to avoid redundant pose writes. */
         private boolean swimmingPose;
         /** Shared close-mode target selected from a reachable, unblocked nearby spot. */
@@ -1740,13 +1752,16 @@ public final class CompanionManager {
                     // Keep the sprint going while airborne: a walking pace cannot clear three
                     // blocks, so the companion would fall short of the far side.
                     state.parkourUntilTick = currentTick + PARKOUR_AIR_TICKS;
-                    speed = PARKOUR_CROSS_SPEED;
+                    // A far side one block higher needs more forward speed: at the plain
+                    // crossing speed the companion is still below the ledge when it arrives.
+                    state.parkourClimb = isLandingHigher(npc, npcLocation, wx, wz);
+                    speed = state.parkourClimb ? PARKOUR_CLIMB_SPEED : PARKOUR_CROSS_SPEED;
                     vx = (wx / waypointDistance) * speed;
                     velocityZ = (wz / waypointDistance) * speed;
                 }
                 // Still airborne over the gap: keep the sprint speed so the jump lands.
                 if (currentTick < state.parkourUntilTick && !npc.isOnGround()) {
-                    speed = PARKOUR_CROSS_SPEED;
+                    speed = state.parkourClimb ? PARKOUR_CLIMB_SPEED : PARKOUR_CROSS_SPEED;
                     vx = (wx / waypointDistance) * speed;
                     velocityZ = (wz / waypointDistance) * speed;
                 }
@@ -1835,6 +1850,40 @@ public final class CompanionManager {
             return true;
         }
         return !block.getCollisionShape().getBoundingBoxes().isEmpty();
+    }
+
+    /**
+     * Whether the far side of the gap sits one block higher than the companion.
+     *
+     * <p>The landing is looked for along the direction of travel: the first solid block found
+     * within three blocks. When it is one block above the companion, the jump has to gain height
+     * as well as distance, which needs more forward speed.</p>
+     */
+    private static boolean isLandingHigher(Mannequin npc, Location npcLocation, double wx, double wz) {
+        double length = Math.sqrt(wx * wx + wz * wz);
+        if (length < 1.0E-3) {
+            return false;
+        }
+        double dirX = wx / length;
+        double dirZ = wz / length;
+        World world = npcLocation.getWorld();
+        int originY = (int) Math.floor(npcLocation.getY());
+        for (int step = 1; step <= PARKOUR_LANDING_SEARCH; step++) {
+            int x = (int) Math.floor(npcLocation.getX() + dirX * step);
+            int z = (int) Math.floor(npcLocation.getZ() + dirZ * step);
+            if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+                return false;
+            }
+            // Solid ground at the companion's own level: a flat landing, no climb needed.
+            if (hasFloorAt(world, x, originY - 1, z) && isClearColumn(world, x, originY, z)) {
+                return false;
+            }
+            // Solid ground one block higher: this is the ledge the companion has to jump onto.
+            if (hasFloorAt(world, x, originY, z) && isClearColumn(world, x, originY + 1, z)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether the given column is free for the companion to pass through. */

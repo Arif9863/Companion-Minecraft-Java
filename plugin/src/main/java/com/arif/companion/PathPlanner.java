@@ -399,6 +399,13 @@ final class PathPlanner {
                 return;
             }
             if (!isStandable(world, landing)) {
+                // The far side may sit one block higher: a player jumps up onto a ledge across
+                // a gap, so the companion may as well. Check that before giving up on this gap.
+                Node raised = new Node(landing.x(), landing.y() + PARKOUR_RISE, landing.z());
+                if (isStandable(world, raised) && withinRadius(node, raised, radius)) {
+                    result.add(raised);
+                    return;
+                }
                 // Not a landing yet: a longer jump may still reach solid ground further on.
                 continue;
             }

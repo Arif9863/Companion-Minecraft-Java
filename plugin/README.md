@@ -128,7 +128,7 @@ Mannequins are not `Mob` and have no vanilla pathfinder, so the plugin computes 
 
 - **Never through walls.** A route only exists if every step is walkable. A node without solid ground beneath it is rejected, so a route cannot lead across the void of a ravine.
 - **Never down a cliff.** A route descends at most one block per step — except when you are standing below the companion, where it may come down after you (up to 12 blocks) instead of giving up. The descent still needs a clear shaft and a solid floor.
-- **Parkour.** A gap of up to three blocks is jumped, the way a player clears it. The companion sprints for the duration of the jump, because its walking pace is far slower than a player's.
+- **Parkour.** A gap of up to three blocks is jumped, the way a player clears it — including a far side that sits one block higher. The companion sprints for the duration of the jump, because its walking pace is far slower than a player's.
 - **Never into the void.** When the companion has no route for 5 seconds, or is more than 8 blocks below you while standing on ground, it is rescued to its mode's safe landing spot.
 - **Emergency teleports are distance-based** (`teleport-distance`, `close-teleport-distance`, both 24 blocks by default). A blocked route alone never causes a teleport.
 - **Doors are opened on the way** and closed again afterwards. When two companions pass through the same doorway, the first one holds the door open for the second, but for at most 6 seconds, so a house is never left open.
