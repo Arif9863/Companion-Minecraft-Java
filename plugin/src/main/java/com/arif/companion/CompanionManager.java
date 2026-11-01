@@ -227,8 +227,8 @@ public final class CompanionManager {
     /**
      * Upward velocity of a parkour jump.
      *
-     * <p>A player's own jump is about 0.42; this is only slightly stronger so the companion
-     * clears the gap without looking like it flies.</p>
+     * <p>A player's own jump is about 0.42 and lifts them 1.25 blocks; the companion uses the
+     * same kind of jump, so it rises just as high over a ledge.</p>
      */
     private static final double PARKOUR_JUMP_VELOCITY = 0.45;
     /**
@@ -239,28 +239,51 @@ public final class CompanionManager {
      */
     private static final double PARKOUR_CROSS_SPEED = 0.34;
     /**
-     * Horizontal speed used when the far side of the gap sits one block higher.
+     * How many ticks the climb jump should take to reach the ledge.
      *
-     * <p>A jump that has to gain a block of height while crossing needs more forward speed: at
-     * the plain crossing speed the companion is still below the ledge when it arrives and falls
-     * back. Crossing faster means arriving sooner, while the jump is still high enough.</p>
+     * <p>A jump of 0.50 is above one block of height from about the third tick until roughly the
+     * tenth, and comes back down to that height around the eleventh tick. Six ticks sits in the
+     * middle of that window, so the companion arrives above the ledge while it is still high
+     * enough to land on it: any earlier and it sails over the top, any later and it drops back
+     * into the gap.</p>
      */
-    private static final double PARKOUR_CLIMB_SPEED = 0.50;
+    private static final int PARKOUR_CLIMB_TARGET_TICKS = 6;
     /**
      * Upward velocity of a jump onto a ledge one block higher.
      *
-     * <p>Stronger than the plain parkour jump: the companion has to clear the lip of the ledge
-     * as well as the gap, and a plain jump peaks too close to the edge to do both at once.</p>
+     * <p>A player's own jump of 0.42 lifts them 1.25 blocks, which is only just enough for one
+     * block of height. 0.50 clears that height with room to spare in every jump arc, so the
+     * companion reliably gets its feet onto the top of the ledge.</p>
      */
-    private static final double PARKOUR_CLIMB_JUMP_VELOCITY = 0.60;
+    private static final double PARKOUR_CLIMB_JUMP_VELOCITY = 0.50;
+    /** Slowest horizontal speed used while climbing onto a ledge. */
+    private static final double PARKOUR_CLIMB_MIN_SPEED = 0.28;
     /**
-     * Minimum upward velocity held while climbing onto a higher ledge.
+     * Fastest horizontal speed used while climbing onto a ledge.
      *
-     * <p>Kept for a moment so the companion keeps rising while it crosses the gap, the way a
-     * player holds the jump key. Without it the jump peaks just short of the ledge and the
-     * companion slides back down.</p>
+     * <p>Fast enough to cross the widest gap of three blocks before the jump carries the
+     * companion back down to the height of the ledge.</p>
      */
-    private static final double PARKOUR_CLIMB_GLIDE = 0.20;
+    private static final double PARKOUR_CLIMB_MAX_SPEED = 0.60;
+    /**
+     * How close to the middle of the ledge the companion has to be before it stops moving forward.
+     *
+     * <p>Pushing on past the ledge makes the companion sail over the top and land far behind it,
+     * so the push stops as soon as the companion is over the block.</p>
+     */
+    private static final double PARKOUR_LEDGE_STOP_DISTANCE = 0.30;
+    /**
+     * Upward velocity of the hop that lifts a companion onto the top of a ledge.
+     *
+     * <p>A player's own jump lifts 1.25 blocks, which is just enough for one block of height.</p>
+     */
+    private static final double PARKOUR_CLIMB_ASSIST = 0.42;
+    /**
+     * How far below the top of the ledge a companion may be and still be helped up.
+     *
+     * <p>A hop lifts it 1.25 blocks, so anything deeper than that is out of reach.</p>
+     */
+    private static final double PARKOUR_CLIMB_ASSIST_REACH = 1.25;
     /** How many ticks the companion keeps its parkour speed while airborne over a gap. */
     private static final int PARKOUR_AIR_TICKS = 14;
     /**
@@ -271,6 +294,14 @@ public final class CompanionManager {
      * jump started late falls into the gap.</p>
      */
     private static final double GAP_LOOKAHEAD = 1.0;
+    /**
+     * How close an elevated waypoint has to be before the companion hops up onto it.
+     *
+     * <p>A hop is only useful for a step right in front of the companion. Hopping towards a
+     * ledge that is still several blocks away keeps the companion in the air over the gap it is
+     * about to jump, and a jump cannot be started from there.</p>
+     */
+    private static final double PARKOUR_STEP_UP_REACH = 1.7;
     /** How many blocks ahead the landing of a parkour jump is looked for. */
     private static final int PARKOUR_LANDING_SEARCH = 4;
     /** How far beside the owner a companion appears when summoned or rescued. */
@@ -399,6 +430,22 @@ public final class CompanionManager {
         private long parkourUntilTick = Long.MIN_VALUE;
         /** Whether the far side of the current gap sits one block higher. */
         private boolean parkourClimb;
+        /**
+         * The block the companion is climbing onto, or null when it is crossing a flat gap.
+         *
+         * <p>The climb is aimed at that block: the companion has to arrive above it, not sail
+         * over it, so the forward push is measured against the distance to this block.</p>
+         */
+        private PathPlanner.BlockPos parkourLedge;
+        /** Horizontal speed chosen for the current climb, derived from the distance to the ledge. */
+        private double parkourClimbSpeed;
+        /**
+         * Whether the climb has already been helped up by a short hop.
+         *
+         * <p>The hop may only be given once per jump: repeating it would keep the companion
+         * bouncing above the ledge instead of landing on it.</p>
+         */
+        private boolean parkourAssisted;
         /** Whether the mannequin's current pose is swimming, to avoid redundant pose writes. */
         private boolean swimmingPose;
         /** Shared close-mode target selected from a reachable, unblocked nearby spot. */
@@ -1758,35 +1805,83 @@ public final class CompanionManager {
                 npc.setVelocity(new org.bukkit.util.Vector(vx, swimY, velocityZ));
             } else {
                 double vy = npc.getVelocity().getY();
+                boolean onGround = npc.isOnGround();
+                if (onGround) {
+                    // A finished jump leaves no ledge to aim for any more.
+                    state.parkourLedge = null;
+                    state.parkourClimb = false;
+                    state.parkourAssisted = false;
+                }
                 // Parkour is checked first and takes priority over the ordinary step-up jump.
                 // When the far side of a gap is one block higher, the waypoint sits above the
                 // companion, so the step-up rule used to set the jump velocity before the gap
                 // check could look at it — and the companion jumped too small and fell in.
-                boolean gapAhead = npc.isOnGround() && isGapAhead(npc, npcLocation, wx, wz);
+                boolean gapAhead = onGround && isGapAhead(npc, npcLocation, wx, wz);
                 if (gapAhead) {
                     // Keep the sprint going while airborne: a walking pace cannot clear three
                     // blocks, so the companion would fall short of the far side.
                     state.parkourUntilTick = currentTick + PARKOUR_AIR_TICKS;
-                    // A far side one block higher needs more forward speed: at the plain
-                    // crossing speed the companion is still below the ledge when it arrives.
-                    state.parkourClimb = isLandingHigher(npc, npcLocation, wx, wz);
-                    vy = state.parkourClimb
-                            ? PARKOUR_CLIMB_JUMP_VELOCITY : PARKOUR_JUMP_VELOCITY;
-                    speed = state.parkourClimb ? PARKOUR_CLIMB_SPEED : PARKOUR_CROSS_SPEED;
+                    // The far side may sit one block higher. Then the companion has to arrive
+                    // above the top of that ledge while it is still high enough to drop onto it.
+                    PathPlanner.BlockPos ledge = findParkourLedge(npc.getWorld(), npcLocation, wx, wz);
+                    state.parkourLedge = ledge;
+                    state.parkourAssisted = false;
+                    if (ledge != null) {
+                        state.parkourClimb = true;
+                        // The horizontal speed follows the distance to the ledge: the companion
+                        // has to arrive above it while the jump is still high enough to land on
+                        // top. Arriving earlier sails over the ledge, arriving later drops the
+                        // companion back into the gap.
+                        double travel = Math.max(0.3, distanceToLedge(npcLocation, ledge));
+                        state.parkourClimbSpeed = Math.min(PARKOUR_CLIMB_MAX_SPEED,
+                                Math.max(PARKOUR_CLIMB_MIN_SPEED,
+                                        travel / PARKOUR_CLIMB_TARGET_TICKS));
+                        vy = PARKOUR_CLIMB_JUMP_VELOCITY;
+                        speed = state.parkourClimbSpeed;
+                    } else {
+                        state.parkourClimb = false;
+                        vy = PARKOUR_JUMP_VELOCITY;
+                        speed = PARKOUR_CROSS_SPEED;
+                    }
                     vx = (wx / waypointDistance) * speed;
                     velocityZ = (wz / waypointDistance) * speed;
-                } else if (npc.isOnGround() && wy > 0.4) {
-                    // An ordinary one-block step up.
+                } else if (onGround && wy > 0.4 && waypointDistance <= PARKOUR_STEP_UP_REACH) {
+                    // An ordinary one-block step up, close enough to hop onto.
                     vy = 0.42;
                 }
-                // Still airborne over the gap: keep the sprint speed so the jump lands, and hold
-                // the climb so the companion clears the lip of a higher ledge.
-                if (currentTick < state.parkourUntilTick && !npc.isOnGround()) {
-                    speed = state.parkourClimb ? PARKOUR_CLIMB_SPEED : PARKOUR_CROSS_SPEED;
-                    vx = (wx / waypointDistance) * speed;
-                    velocityZ = (wz / waypointDistance) * speed;
-                    if (state.parkourClimb && vy < PARKOUR_CLIMB_GLIDE) {
-                        vy = PARKOUR_CLIMB_GLIDE;
+                // Still airborne over the gap: keep the sprint speed so the jump lands.
+                if (currentTick < state.parkourUntilTick && !onGround) {
+                    if (state.parkourClimb && state.parkourLedge != null) {
+                        // Aim at the middle of the ledge rather than the waypoint, and stop
+                        // pushing once the companion is over it. Pushing on past the ledge is
+                        // what made the companion sail over the top and fall afterwards.
+                        double lx = state.parkourLedge.x() + 0.5 - npcLocation.getX();
+                        double lz = state.parkourLedge.z() + 0.5 - npcLocation.getZ();
+                        double ledgeDistance = Math.sqrt(lx * lx + lz * lz);
+                        if (ledgeDistance > PARKOUR_LEDGE_STOP_DISTANCE) {
+                            speed = state.parkourClimbSpeed;
+                            vx = (lx / ledgeDistance) * speed;
+                            velocityZ = (lz / ledgeDistance) * speed;
+                        } else {
+                            vx = 0.0;
+                            velocityZ = 0.0;
+                        }
+                        // Just short of the top of the ledge: one short hop lifts the companion
+                        // the rest of the way, the way a player jumps onto a block. The hop is
+                        // given only once, otherwise the companion would keep bouncing and
+                        // hover above the ledge instead of landing on it.
+                        double shortfall = (state.parkourLedge.y() + 1) - npcLocation.getY();
+                        if (!state.parkourAssisted && shortfall > 0.0
+                                && shortfall <= PARKOUR_CLIMB_ASSIST_REACH
+                                && ledgeDistance <= PARKOUR_CLIMB_ASSIST_REACH
+                                && vy < PARKOUR_CLIMB_ASSIST) {
+                            state.parkourAssisted = true;
+                            vy = PARKOUR_CLIMB_ASSIST;
+                        }
+                    } else {
+                        speed = PARKOUR_CROSS_SPEED;
+                        vx = (wx / waypointDistance) * speed;
+                        velocityZ = (wz / waypointDistance) * speed;
                     }
                 }
                 npc.setVelocity(new org.bukkit.util.Vector(vx, vy, velocityZ));
@@ -1877,37 +1972,50 @@ public final class CompanionManager {
     }
 
     /**
-     * Whether the far side of the gap sits one block higher than the companion.
+     * Finds the block the companion has to climb onto across the gap, or null when the far side
+     * is at the same height.
      *
-     * <p>The landing is looked for along the direction of travel: the first solid block found
-     * within three blocks. When it is one block above the companion, the jump has to gain height
-     * as well as distance, which needs more forward speed.</p>
+     * <p>The scan starts past the gap: the block directly in front still belongs to the ground
+     * the companion is standing on, so it must not be mistaken for the far side. A ledge counts
+     * when it has solid ground at the companion's own level and free space one block above,
+     * which is exactly the shape of a block a player jumps onto.</p>
      */
-    private static boolean isLandingHigher(Mannequin npc, Location npcLocation, double wx, double wz) {
+    private static PathPlanner.BlockPos findParkourLedge(World world, Location npcLocation,
+                                                         double wx, double wz) {
         double length = Math.sqrt(wx * wx + wz * wz);
         if (length < 1.0E-3) {
-            return false;
+            return null;
         }
         double dirX = wx / length;
         double dirZ = wz / length;
-        World world = npcLocation.getWorld();
         int originY = (int) Math.floor(npcLocation.getY());
-        for (int step = 1; step <= PARKOUR_LANDING_SEARCH; step++) {
+        // The gap itself is skipped: only the blocks beyond it can be the far side.
+        for (int step = 2; step <= PARKOUR_LANDING_SEARCH; step++) {
             int x = (int) Math.floor(npcLocation.getX() + dirX * step);
             int z = (int) Math.floor(npcLocation.getZ() + dirZ * step);
             if (!world.isChunkLoaded(x >> 4, z >> 4)) {
-                return false;
+                return null;
             }
-            // Solid ground at the companion's own level: a flat landing, no climb needed.
-            if (hasFloorAt(world, x, originY - 1, z) && isClearColumn(world, x, originY, z)) {
-                return false;
+            // The goal is the elevated block: it must sit across a gap, not directly beside us.
+            // In particular, do not mistake the near-edge block (which is still reachable by a
+            // normal step-up) for the far-side ledge.
+            int gapBlockX = (int) Math.floor(npcLocation.getX() + dirX * 1.0);
+            int gapBlockZ = (int) Math.floor(npcLocation.getZ() + dirZ * 1.0);
+            if (hasFloorAt(world, gapBlockX, originY - 1, gapBlockZ)) {
+                continue;
             }
-            // Solid ground one block higher: this is the ledge the companion has to jump onto.
             if (hasFloorAt(world, x, originY, z) && isClearColumn(world, x, originY + 1, z)) {
-                return true;
+                return new PathPlanner.BlockPos(x, originY, z);
             }
         }
-        return false;
+        return null;
+    }
+
+    /** The horizontal distance from the companion to the middle of the ledge it is climbing onto. */
+    private static double distanceToLedge(Location npcLocation, PathPlanner.BlockPos ledge) {
+        double dx = ledge.x() + 0.5 - npcLocation.getX();
+        double dz = ledge.z() + 0.5 - npcLocation.getZ();
+        return Math.sqrt(dx * dx + dz * dz);
     }
 
     /** Whether the given column is free for the companion to pass through. */
