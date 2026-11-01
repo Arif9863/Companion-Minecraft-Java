@@ -61,6 +61,8 @@ own line under `companion-owners` to grant access, then restart the server or ru
 
 Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system. Companion behavior stays command-driven; no extra GUI or control item is required.
 
+The Skript `/yui` and `/sandrone` commands check the same list before they say anything. The plugin marks every allowed player with the `companion_npc_user` scoreboard tag, and the scripts refuse outsiders with their own line ("Hati dan kasih Yui hanya untuk Arif") instead of the friendly greeting. The tag is set on join and refreshed by `/companionnpc reload`.
+
 ## Eris (standalone companion)
 
 Eris is a companion of her own, not a third member of the Yui–Sandrone pair.
@@ -124,11 +126,13 @@ A companion has exactly one standing behaviour at a time. **The mode stays in fo
 
 ## Movement rules
 
+All three companions — Yui, Sandrone, and Eris — share the same A* navigation and jump behavior. A parkour fix therefore applies to all three.
+
 Mannequins are not `Mob` and have no vanilla pathfinder, so the plugin computes an A* route itself (`PathPlanner`) and walks it with velocity.
 
 - **Never through walls.** A route only exists if every step is walkable. A node without solid ground beneath it is rejected, so a route cannot lead across the void of a ravine.
-- **Never down a cliff.** A route descends at most one block per step — except when you are standing below the companion, where it may come down after you (up to 12 blocks) instead of giving up. The descent still needs a clear shaft and a solid floor.
-- **Parkour.** A gap of up to three blocks is jumped, the way a player clears it. The companion sprints for the duration of the jump, because its walking pace is far slower than a player's.
+- **Never down a cliff.** A walking route descends at most one block per step — except when you are standing below the companion, where it may come down after you (up to 12 blocks). A parkour jump across a gap may land up to four blocks lower. Either way, the fall shaft must be clear and the landing must have safe solid ground.
+- **Parkour.** All three companions — Yui, Sandrone, and Eris — share the same jump behavior. A gap of up to three blocks can be crossed; the companion can also land on a far side one block higher or up to four blocks lower. Lower jumps require an open gap, a clear fall shaft, and a solid safe landing floor.
 - **Climbing onto a ledge.** A far side that sits one block higher is jumped onto rather than merely jumped at. The companion aims at the middle of that block and matches its speed to the distance, so it arrives while the jump is still high enough to land on top — arriving too early would sail over the ledge, and too late would drop back into the gap. A single short hop covers the last fraction of a block.
 - **Never into the void.** When the companion has no route for 5 seconds, or is more than 8 blocks below you while standing on ground, it is rescued to its mode's safe landing spot.
 - **Emergency teleports are distance-based** (`teleport-distance`, `close-teleport-distance`, both 24 blocks by default). A blocked route alone never causes a teleport.

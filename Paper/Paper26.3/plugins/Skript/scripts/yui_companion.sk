@@ -320,6 +320,10 @@ command /yuisandrone:
 command /yui:
     description: Panggil atau sembunyikan Yui
     trigger:
+        if scoreboard tags of player does not contain "companion_npc_user":
+            send "&d[Yui] Hati dan kasih Yui hanya untuk Arif" to player
+            play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
+            stop trigger
         if {-yui-active::%player's uuid%} is true:
             delete {-yui-active::%player's uuid%}
             delete {-yuifu::%player's uuid%}

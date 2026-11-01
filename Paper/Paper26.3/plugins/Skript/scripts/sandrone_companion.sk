@@ -83,6 +83,10 @@ function duovoice_sandrone_say(p: player, kind: text) :: boolean:
 command /sandrone:
     description: Panggil atau sembunyikan Sandrone
     trigger:
+        if scoreboard tags of player does not contain "companion_npc_user":
+            send "&b[Sandrone] Cihhh...saya hanya membantu Arif saja!!!" to player
+            play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
+            stop trigger
         if {-sandrone-active::%player's uuid%} is true:
             delete {-sandrone-active::%player's uuid%}
             delete {-sandfu::%player's uuid%}

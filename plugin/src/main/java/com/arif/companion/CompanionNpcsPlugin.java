@@ -67,6 +67,38 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         return yuiSandroneAllowed.contains(playerId);
     }
 
+    /**
+     * Scoreboard tag marking a player who may use Yui and Sandrone.
+     *
+     * <p>The Skript commands {@code /yui} and {@code /sandrone} print their own friendly or
+     * refusal lines, and they cannot read the plugin's config. This tag is the shared answer:
+     * the plugin puts it on every allowed player, and the Skript scripts check it before they
+     * say anything. Without it an outsider would still receive "Yui is ready to help you"
+     * even though the plugin refuses to spawn the companion.</p>
+     */
+    static final String COMPANION_USER_TAG = "companion_npc_user";
+
+    /**
+     * Marks or unmarks a player according to the configured companion owners.
+     *
+     * <p>Called on join and after a config reload, so a player who loses access loses the tag
+     * as well.</p>
+     */
+    void refreshCompanionUserTag(Player player) {
+        if (mayUseYuiAndSandrone(player.getUniqueId())) {
+            player.addScoreboardTag(COMPANION_USER_TAG);
+        } else {
+            player.removeScoreboardTag(COMPANION_USER_TAG);
+        }
+    }
+
+    /** Applies the companion-user tag to every player who is online right now. */
+    void refreshCompanionUserTags() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            refreshCompanionUserTag(player);
+        }
+    }
+
     /** The player Eris is reserved for, or null when she is free for anybody to claim. */
     UUID erisOwner() {
         return erisOwner;
@@ -93,6 +125,9 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("eris", new ErisCommand());
         listener = new CompanionListener(this);
         Bukkit.getPluginManager().registerEvents(listener, this);
+        // Mark the players who may use Yui and Sandrone, so the Skript scripts can tell an
+        // outsider from the owner before they print their own lines.
+        refreshCompanionUserTags();
 
         startPackServer();
 
@@ -164,6 +199,9 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             // Existing installation default: reserve Yui and Sandrone to Arif9863.
             configuredOwners = List.of("515402e5-832e-311e-b35f-3f3f0eca8f4f");
             config.set("companion-owners", configuredOwners);
+            // Write the repaired list back to disk. Without this the file on disk keeps its old
+            // shape, and an admin editing it would not find the owner list at all.
+            saveConfig();
         }
         for (String entry : configuredOwners) {
             try {
@@ -673,6 +711,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 case "reload" -> {
                     reloadConfig();
                     readConfig();
+                    refreshCompanionUserTags();
                     sender.sendMessage(Component.text("Companion NPC config reloaded.", NamedTextColor.GREEN));
                 }
                 default -> sender.sendMessage(Component.text("Usage: /" + label + " <clear|reload>", NamedTextColor.YELLOW));

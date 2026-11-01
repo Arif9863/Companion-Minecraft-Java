@@ -144,6 +144,7 @@ public final class CompanionManager {
      */
     private static final long COMBAT_REPLAN_INTERVAL_TICKS = 6L;
     private static final double GOAL_REPLAN_DISTANCE_SQUARED = 9.0;
+    /** How far the companion may be from a route waypoint horizontally. */
     private static final double WAYPOINT_REACHED_DISTANCE_SQUARED = 0.36;
     private static final double STUCK_PROGRESS_DISTANCE_SQUARED = 0.0225;
     /**
@@ -286,12 +287,13 @@ public final class CompanionManager {
     private static final double PARKOUR_CLIMB_ASSIST_REACH = 1.25;
     /** How many ticks the companion keeps its parkour speed while airborne over a gap. */
     private static final int PARKOUR_AIR_TICKS = 14;
+    /** Additional airborne window for downhill gap jumps, whose landing takes longer. */
+    private static final int PARKOUR_DROP_AIR_TICKS = 28;
     /**
      * How far ahead the ground is checked for a gap before the companion jumps.
      *
-     * <p>The check starts right at the companion's own block and only looks a little further:
-     * the jump has to be committed at the edge, because a jump started early lands short and a
-     * jump started late falls into the gap.</p>
+     * <p>The check begins at the immediate route column, and the companion only commits when an
+     * unsupported gap is actually there. It should not jump down a supported stair tread.</p>
      */
     private static final double GAP_LOOKAHEAD = 1.0;
     /**
@@ -304,6 +306,16 @@ public final class CompanionManager {
     private static final double PARKOUR_STEP_UP_REACH = 1.7;
     /** How many blocks ahead the landing of a parkour jump is looked for. */
     private static final int PARKOUR_LANDING_SEARCH = 4;
+    /** Maximum supported gap length in blocks between takeoff and landing. */
+    private static final int PARKOUR_GAP = 3;
+    /** Maximum supported downward landing drop for a gap jump. */
+    private static final int PARKOUR_DROP = 4;
+    /** Target flight time when steering toward a lower parkour landing. */
+    private static final int PARKOUR_DROP_TARGET_TICKS = 8;
+    /** Slowest horizontal speed used for a downhill gap jump. */
+    private static final double PARKOUR_DROP_MIN_SPEED = 0.28;
+    /** Fastest horizontal speed used for a downhill gap jump. */
+    private static final double PARKOUR_DROP_MAX_SPEED = 0.55;
     /** How far beside the owner a companion appears when summoned or rescued. */
     private static final double SIDE_PLACEMENT_DISTANCE = 1.2;
     /** How far to the owner's left or right a companion stands while following. */
@@ -446,6 +458,12 @@ public final class CompanionManager {
          * bouncing above the ledge instead of landing on it.</p>
          */
         private boolean parkourAssisted;
+        /** Whether the current parkour landing is below the takeoff point. */
+        private boolean parkourDrop;
+        /** Lower block to aim for while crossing a downward parkour gap, if any. */
+        private PathPlanner.BlockPos parkourDropLanding;
+        /** Horizontal speed chosen for the current drop jump. */
+        private double parkourDropSpeed;
         /** Whether the mannequin's current pose is swimming, to avoid redundant pose writes. */
         private boolean swimmingPose;
         /** Shared close-mode target selected from a reachable, unblocked nearby spot. */
@@ -1696,6 +1714,7 @@ public final class CompanionManager {
                 state.path = PathPlanner.findPath(npc.getWorld(), npcLocation, targetSpot,
                         PATH_RADIUS, combatDrop, ownerBelow, true);
                 state.waypointIndex = 0;
+                clearParkourState(state);
                 state.plannedGoal = targetSpot.clone();
                 state.lastPlanTick = currentTick;
             }
@@ -1726,6 +1745,12 @@ public final class CompanionManager {
             // Advance past waypoints the companion has already reached.
             org.bukkit.util.Vector waypoint;
             while (state.waypointIndex < state.path.size()) {
+                // Never consume a waypoint while airborne over a jump: the target is still the
+                // block being flown towards, and advancing past it mid-flight would drop the
+                // steering that keeps the companion from falling into the gap.
+                if (currentTick < state.parkourUntilTick && !npc.isOnGround()) {
+                    break;
+                }
                 org.bukkit.util.Vector target = state.path.get(state.waypointIndex);
                 double dxw = target.getX() - npcLocation.getX();
                 double dzw = target.getZ() - npcLocation.getZ();
@@ -1737,6 +1762,7 @@ public final class CompanionManager {
             }
             if (state.waypointIndex >= state.path.size()) {
                 state.path = List.of();
+                clearParkourState(state);
                 return;
             }
             waypoint = state.path.get(state.waypointIndex);
@@ -1770,8 +1796,8 @@ public final class CompanionManager {
                 }
                 state.path = List.of();
                 state.plannedGoal = null;
+                clearParkourState(state);
                 state.lastPlanTick = Long.MIN_VALUE;
-                state.lastAttemptTick = currentTick;
                 state.lastProgressPosition = null;
                 org.bukkit.util.Vector velocity = npc.getVelocity();
                 npc.setVelocity(new org.bukkit.util.Vector(velocity.getX() * 0.2, velocity.getY(), velocity.getZ() * 0.2));
@@ -1807,31 +1833,36 @@ public final class CompanionManager {
                 double vy = npc.getVelocity().getY();
                 boolean onGround = npc.isOnGround();
                 if (onGround) {
-                    // A finished jump leaves no ledge to aim for any more.
-                    state.parkourLedge = null;
-                    state.parkourClimb = false;
-                    state.parkourAssisted = false;
+                    // The jump has landed: discard every target before considering a new jump.
+                    clearParkourState(state);
                 }
                 // Parkour is checked first and takes priority over the ordinary step-up jump.
-                // When the far side of a gap is one block higher, the waypoint sits above the
-                // companion, so the step-up rule used to set the jump velocity before the gap
-                // check could look at it — and the companion jumped too small and fell in.
+                // This also prevents a one-block higher waypoint from being consumed in midair.
                 boolean gapAhead = onGround && isGapAhead(npc, npcLocation, wx, wz);
                 if (gapAhead) {
-                    // Keep the sprint going while airborne: a walking pace cannot clear three
-                    // blocks, so the companion would fall short of the far side.
-                    state.parkourUntilTick = currentTick + PARKOUR_AIR_TICKS;
-                    // The far side may sit one block higher. Then the companion has to arrive
-                    // above the top of that ledge while it is still high enough to drop onto it.
-                    PathPlanner.BlockPos ledge = findParkourLedge(npc.getWorld(), npcLocation, wx, wz);
+                    // Keep horizontal control through the fall so the companion reaches the
+                    // selected supported lower landing instead of running past it.
+                    PathPlanner.BlockPos dropLanding = findParkourDropLanding(
+                            npc.getWorld(), npcLocation, state.path, state.waypointIndex);
+                    clearParkourState(state);
+                    state.parkourUntilTick = currentTick + (dropLanding != null
+                            ? PARKOUR_DROP_AIR_TICKS : PARKOUR_AIR_TICKS);
+                    PathPlanner.BlockPos ledge = dropLanding == null
+                            ? findParkourLedge(npc.getWorld(), npcLocation, wx, wz) : null;
+                    state.parkourDropLanding = dropLanding;
+                    state.parkourDrop = dropLanding != null;
                     state.parkourLedge = ledge;
                     state.parkourAssisted = false;
-                    if (ledge != null) {
+                    if (dropLanding != null) {
+                        state.parkourClimb = false;
+                        double landingDistance = distanceToLedge(npcLocation, dropLanding);
+                        state.parkourDropSpeed = Math.min(PARKOUR_DROP_MAX_SPEED,
+                                Math.max(PARKOUR_DROP_MIN_SPEED,
+                                        landingDistance / PARKOUR_DROP_TARGET_TICKS));
+                        vy = PARKOUR_JUMP_VELOCITY;
+                        speed = state.parkourDropSpeed;
+                    } else if (ledge != null) {
                         state.parkourClimb = true;
-                        // The horizontal speed follows the distance to the ledge: the companion
-                        // has to arrive above it while the jump is still high enough to land on
-                        // top. Arriving earlier sails over the ledge, arriving later drops the
-                        // companion back into the gap.
                         double travel = Math.max(0.3, distanceToLedge(npcLocation, ledge));
                         state.parkourClimbSpeed = Math.min(PARKOUR_CLIMB_MAX_SPEED,
                                 Math.max(PARKOUR_CLIMB_MIN_SPEED,
@@ -1846,15 +1877,12 @@ public final class CompanionManager {
                     vx = (wx / waypointDistance) * speed;
                     velocityZ = (wz / waypointDistance) * speed;
                 } else if (onGround && wy > 0.4 && waypointDistance <= PARKOUR_STEP_UP_REACH) {
-                    // An ordinary one-block step up, close enough to hop onto.
+                    // Ordinary one-block step-up.
                     vy = 0.42;
                 }
-                // Still airborne over the gap: keep the sprint speed so the jump lands.
+                // Maintain jump steering until landing, then let the next waypoint take over.
                 if (currentTick < state.parkourUntilTick && !onGround) {
                     if (state.parkourClimb && state.parkourLedge != null) {
-                        // Aim at the middle of the ledge rather than the waypoint, and stop
-                        // pushing once the companion is over it. Pushing on past the ledge is
-                        // what made the companion sail over the top and fall afterwards.
                         double lx = state.parkourLedge.x() + 0.5 - npcLocation.getX();
                         double lz = state.parkourLedge.z() + 0.5 - npcLocation.getZ();
                         double ledgeDistance = Math.sqrt(lx * lx + lz * lz);
@@ -1866,10 +1894,6 @@ public final class CompanionManager {
                             vx = 0.0;
                             velocityZ = 0.0;
                         }
-                        // Just short of the top of the ledge: one short hop lifts the companion
-                        // the rest of the way, the way a player jumps onto a block. The hop is
-                        // given only once, otherwise the companion would keep bouncing and
-                        // hover above the ledge instead of landing on it.
                         double shortfall = (state.parkourLedge.y() + 1) - npcLocation.getY();
                         if (!state.parkourAssisted && shortfall > 0.0
                                 && shortfall <= PARKOUR_CLIMB_ASSIST_REACH
@@ -1877,6 +1901,18 @@ public final class CompanionManager {
                                 && vy < PARKOUR_CLIMB_ASSIST) {
                             state.parkourAssisted = true;
                             vy = PARKOUR_CLIMB_ASSIST;
+                        }
+                    } else if (state.parkourDrop && state.parkourDropLanding != null) {
+                        double lx = state.parkourDropLanding.x() + 0.5 - npcLocation.getX();
+                        double lz = state.parkourDropLanding.z() + 0.5 - npcLocation.getZ();
+                        double landingDistance = Math.sqrt(lx * lx + lz * lz);
+                        if (landingDistance > PARKOUR_LEDGE_STOP_DISTANCE) {
+                            speed = state.parkourDropSpeed;
+                            vx = (lx / landingDistance) * speed;
+                            velocityZ = (lz / landingDistance) * speed;
+                        } else {
+                            vx = 0.0;
+                            velocityZ = 0.0;
                         }
                     } else {
                         speed = PARKOUR_CROSS_SPEED;
@@ -1917,13 +1953,9 @@ public final class CompanionManager {
     /**
      * Whether there is a gap in the ground ahead of the companion.
      *
-     * <p>The ground is sampled a little ahead along the direction of travel. A block with no
-     * support beneath it — a ravine or a hole — means the companion has to jump, otherwise it
-     * walks into the void. Water counts as ground, so the companion swims rather than jumps.</p>
-     *
-     * <p>A step down is not a gap: when the ground ahead is exactly one block lower and still
-     * solid, the companion walks down instead of jumping off the edge. The check looks only one
-     * block down, because a ravine also has no floor — only a genuine staircase does.</p>
+     * <p>Samples the columns directly ahead along the intended cardinal route. A supported
+     * one-block step-down stays a normal walk; a missing support column is a gap, even if there
+     * is a lower floor beyond it.</p>
      */
     private static boolean isGapAhead(Mannequin npc, Location npcLocation, double wx, double wz) {
         double length = Math.sqrt(wx * wx + wz * wz);
@@ -1934,29 +1966,29 @@ public final class CompanionManager {
         double dirZ = wz / length;
         World world = npcLocation.getWorld();
         int originY = (int) Math.floor(npcLocation.getY());
-        for (double distance = 0.6; distance <= GAP_LOOKAHEAD; distance += 0.4) {
-            int x = (int) Math.floor(npcLocation.getX() + dirX * distance);
-            int z = (int) Math.floor(npcLocation.getZ() + dirZ * distance);
-            if (!world.isChunkLoaded(x >> 4, z >> 4)) {
-                return false;
-            }
-            // The ground continues at this level: nothing to jump over.
-            if (hasFloorAt(world, x, originY - 1, z)) {
-                continue;
-            }
-            // The ground is missing at this level. A solid step exactly one block lower means a
-            // staircase, so the companion walks down rather than jumping.
-            if (hasFloorAt(world, x, originY - 2, z) && isClearColumn(world, x, originY - 1, z)) {
-                return false;
-            }
-            // Nothing below within a block: this is a real gap. A solid block at this level is a
-            // wall in the way, not something to jump over.
-            if (!isClearColumn(world, x, originY, z)) {
-                return false;
-            }
-            return true;
+        int originX = npcLocation.getBlockX();
+        int originZ = npcLocation.getBlockZ();
+        int axisX = Math.abs(dirX) >= Math.abs(dirZ) ? (int) Math.signum(dirX) : 0;
+        int axisZ = axisX == 0 ? (int) Math.signum(dirZ) : 0;
+        if (axisX == 0 && axisZ == 0) {
+            return false;
         }
-        return false;
+        int x = originX + axisX;
+        int z = originZ + axisZ;
+        if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+            return false;
+        }
+        // The ground continues beside the companion: nothing to jump over yet.
+        if (hasFloorAt(world, x, originY - 1, z)) {
+            return false;
+        }
+        // A one-block stair is walked down, not jumped: its tread sits exactly one block lower
+        // and the column above it is free. A hole that is deeper than that is a real gap.
+        if (hasFloorAt(world, x, originY - 2, z) && isClearColumn(world, x, originY - 1, z)) {
+            return false;
+        }
+        // A solid block at foot height is a wall in the way, not something to jump over.
+        return isClearColumn(world, x, originY, z);
     }
 
     /** Whether there is a solid block to stand on at the given position. */
@@ -1972,14 +2004,86 @@ public final class CompanionManager {
     }
 
     /**
-     * Finds the block the companion has to climb onto across the gap, or null when the far side
-     * is at the same height.
+     * Finds a lower landing in the planned route across a gap.
      *
-     * <p>The scan starts past the gap: the block directly in front still belongs to the ground
-     * the companion is standing on, so it must not be mistaken for the far side. A ledge counts
-     * when it has solid ground at the companion's own level and free space one block above,
-     * which is exactly the shape of a block a player jumps onto.</p>
+     * <p>The current waypoint may still be on the takeoff side: A* can use several ordinary
+     * approach nodes before it emits the parkour edge. Search later route nodes for the first
+     * lower, cardinal landing within jump range, then validate every gap and shaft column.</p>
      */
+    private static PathPlanner.BlockPos findParkourDropLanding(World world, Location npcLocation,
+                                                               List<org.bukkit.util.Vector> path,
+                                                               int waypointIndex) {
+        int originX = npcLocation.getBlockX();
+        int originZ = npcLocation.getBlockZ();
+        int originY = (int) Math.floor(npcLocation.getY());
+        for (int index = waypointIndex; index < path.size(); index++) {
+            org.bukkit.util.Vector routeNode = path.get(index);
+            int targetX = routeNode.getBlockX();
+            int targetZ = routeNode.getBlockZ();
+            int dx = targetX - originX;
+            int dz = targetZ - originZ;
+            if (dx != 0 && dz != 0) {
+                continue;
+            }
+            int horizontalSteps = Math.abs(dx) + Math.abs(dz);
+            if (horizontalSteps < 2) {
+                continue;
+            }
+            if (horizontalSteps > PARKOUR_GAP + 1) {
+                return null;
+            }
+            int drop = originY - routeNode.getBlockY();
+            if (drop <= 0 || drop > PARKOUR_DROP) {
+                continue;
+            }
+            int stepX = Integer.compare(dx, 0);
+            int stepZ = Integer.compare(dz, 0);
+            boolean validGap = true;
+            for (int step = 1; step < horizontalSteps; step++) {
+                int x = originX + stepX * step;
+                int z = originZ + stepZ * step;
+                if (!world.isChunkLoaded(x >> 4, z >> 4)
+                        || hasFloorAt(world, x, originY - 1, z)
+                        || !isClearColumn(world, x, originY, z)) {
+                    validGap = false;
+                    break;
+                }
+            }
+            if (!validGap || !world.isChunkLoaded(targetX >> 4, targetZ >> 4)) {
+                continue;
+            }
+            boolean clearShaft = true;
+            for (int y = originY - 1; y >= originY - drop; y--) {
+                if (!isClearColumn(world, targetX, y, targetZ)
+                        || PathPlanner.isWaterAt(world, targetX, y, targetZ)) {
+                    clearShaft = false;
+                    break;
+                }
+            }
+            if (!clearShaft) {
+                continue;
+            }
+            int feetY = originY - drop;
+            if (!hasFloorAt(world, targetX, feetY - 1, targetZ)
+                    || PathPlanner.isWaterAt(world, targetX, feetY - 1, targetZ)) {
+                continue;
+            }
+            Block feet = world.getBlockAt(targetX, feetY, targetZ);
+            Block head = world.getBlockAt(targetX, feetY + 1, targetZ);
+            Block support = world.getBlockAt(targetX, feetY - 1, targetZ);
+            if (feet.getType() != Material.LAVA && head.getType() != Material.LAVA
+                    && support.getType() != Material.LAVA
+                    && feet.getCollisionShape().getBoundingBoxes().isEmpty()
+                    && head.getCollisionShape().getBoundingBoxes().isEmpty()) {
+                return new PathPlanner.BlockPos(targetX, feetY, targetZ);
+            }
+        }
+        return null;
+    }
+
+
+
+    /** Whether the far side of the gap sits one block higher than the companion. */
     private static PathPlanner.BlockPos findParkourLedge(World world, Location npcLocation,
                                                          double wx, double wz) {
         double length = Math.sqrt(wx * wx + wz * wz);
@@ -1989,22 +2093,27 @@ public final class CompanionManager {
         double dirX = wx / length;
         double dirZ = wz / length;
         int originY = (int) Math.floor(npcLocation.getY());
-        // The gap itself is skipped: only the blocks beyond it can be the far side.
+        int originX = npcLocation.getBlockX();
+        int originZ = npcLocation.getBlockZ();
+        int axisX = Math.abs(dirX) >= Math.abs(dirZ) ? (int) Math.signum(dirX) : 0;
+        int axisZ = axisX == 0 ? (int) Math.signum(dirZ) : 0;
+        if (axisX == 0 && axisZ == 0) {
+            return null;
+        }
+        int gapX = originX + axisX;
+        int gapZ = originZ + axisZ;
+        if (!world.isChunkLoaded(gapX >> 4, gapZ >> 4)
+                || hasFloorAt(world, gapX, originY - 1, gapZ)) {
+            return null;
+        }
         for (int step = 2; step <= PARKOUR_LANDING_SEARCH; step++) {
-            int x = (int) Math.floor(npcLocation.getX() + dirX * step);
-            int z = (int) Math.floor(npcLocation.getZ() + dirZ * step);
+            int x = originX + axisX * step;
+            int z = originZ + axisZ * step;
             if (!world.isChunkLoaded(x >> 4, z >> 4)) {
                 return null;
             }
-            // The goal is the elevated block: it must sit across a gap, not directly beside us.
-            // In particular, do not mistake the near-edge block (which is still reachable by a
-            // normal step-up) for the far-side ledge.
-            int gapBlockX = (int) Math.floor(npcLocation.getX() + dirX * 1.0);
-            int gapBlockZ = (int) Math.floor(npcLocation.getZ() + dirZ * 1.0);
-            if (hasFloorAt(world, gapBlockX, originY - 1, gapBlockZ)) {
-                continue;
-            }
-            if (hasFloorAt(world, x, originY, z) && isClearColumn(world, x, originY + 1, z)) {
+            if (hasFloorAt(world, x, originY, z)
+                    && isClearColumn(world, x, originY + 1, z)) {
                 return new PathPlanner.BlockPos(x, originY, z);
             }
         }
@@ -2017,6 +2126,19 @@ public final class CompanionManager {
         double dz = ledge.z() + 0.5 - npcLocation.getZ();
         return Math.sqrt(dx * dx + dz * dz);
     }
+
+    /** Clears every parkour-only target and timer when its route is replaced or finished. */
+    private static void clearParkourState(FollowState state) {
+        state.parkourUntilTick = Long.MIN_VALUE;
+        state.parkourClimb = false;
+        state.parkourLedge = null;
+        state.parkourClimbSpeed = 0.0;
+        state.parkourAssisted = false;
+        state.parkourDrop = false;
+        state.parkourDropLanding = null;
+        state.parkourDropSpeed = 0.0;
+    }
+
 
     /** Whether the given column is free for the companion to pass through. */
     private static boolean isClearColumn(World world, int x, int y, int z) {
@@ -2543,6 +2665,7 @@ public final class CompanionManager {
             npc.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
             state.path = List.of();
             state.plannedGoal = null;
+            clearParkourState(state);
             state.waypointIndex = 0;
             state.lastProgressPosition = null;
             return true;

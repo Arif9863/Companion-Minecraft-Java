@@ -38,6 +38,9 @@ public final class CompanionListener implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
+        // Mark the player according to the configured companion owners, so the Skript commands
+        // /yui and /sandrone know who may use them.
+        plugin.refreshCompanionUserTag(player);
         NamespacedKey obsolete = new NamespacedKey(plugin, "control");
         ItemStack[] contents = player.getInventory().getContents();
         boolean removed = false;
