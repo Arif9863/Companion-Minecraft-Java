@@ -377,24 +377,30 @@ final class PathPlanner {
                                          List<Node> result) {
         int dx = offset[0];
         int dz = offset[1];
-        // The gap is measured from the block in front of the companion. A landing further along
-        // is only reachable when every block in between is open air with no floor beneath it.
+        // The gap is measured from the block in front of the companion. Every block of the gap
+        // must be open air with no floor beneath it, and the landing one further along must be
+        // solid. The scan keeps going for longer jumps instead of stopping at the first
+        // unreachable landing: a three-block gap has no floor two blocks out either.
         for (int gap = 1; gap <= PARKOUR_GAP; gap++) {
-            // The block right in front must be open, otherwise this is a wall, not a gap.
+            // The block in the gap must be open, otherwise this is a wall, not a gap.
             Node front = new Node(node.x() + dx * gap, node.y(), node.z() + dz * gap);
             if (!isClearColumn(world, front)) {
                 return;
             }
-            // The landing block is one further along.
-            Node landing = new Node(node.x() + dx * (gap + 1), node.y(), node.z() + dz * (gap + 1));
-            if (!isStandable(world, landing) || !withinRadius(node, landing, radius)) {
-                return;
-            }
-            // The gap itself must have no floor: otherwise the companion could simply walk
-            // across it and no jump is needed.
+            // The gap must have no floor: otherwise the companion could simply walk across it
+            // and no jump is needed.
             Node gapFloor = new Node(front.x(), front.y() - 1, front.z());
             if (hasFloor(world, gapFloor)) {
                 return;
+            }
+            // The landing block is one further along.
+            Node landing = new Node(node.x() + dx * (gap + 1), node.y(), node.z() + dz * (gap + 1));
+            if (!withinRadius(node, landing, radius)) {
+                return;
+            }
+            if (!isStandable(world, landing)) {
+                // Not a landing yet: a longer jump may still reach solid ground further on.
+                continue;
             }
             result.add(landing);
             // A jump of up to one block up is also possible, so a ledge across the gap counts.

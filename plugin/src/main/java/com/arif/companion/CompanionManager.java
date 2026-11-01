@@ -243,10 +243,11 @@ public final class CompanionManager {
     /**
      * How far ahead the ground is checked for a gap before the companion jumps.
      *
-     * <p>One block is enough: a jump is committed early, so by the time the companion reaches
-     * the edge it is already in the air.</p>
+     * <p>The check starts right at the companion's own block and only looks a little further:
+     * the jump has to be committed at the edge, because a jump started early lands short and a
+     * jump started late falls into the gap.</p>
      */
-    private static final double GAP_LOOKAHEAD = 1.2;
+    private static final double GAP_LOOKAHEAD = 1.0;
     /** How far beside the owner a companion appears when summoned or rescued. */
     private static final double SIDE_PLACEMENT_DISTANCE = 1.2;
     /** How far to the owner's left or right a companion stands while following. */
