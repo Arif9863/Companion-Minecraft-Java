@@ -58,6 +58,17 @@ final class PathPlanner {
     private static final int PARKOUR_GAP = 3;
     /** Maximum vertical rise a single parkour jump can reach. */
     private static final int PARKOUR_RISE = 1;
+    /**
+     * How far a parkour jump may fall onto its landing.
+     *
+     * <p>A player running off a ledge clears a gap just as easily when the far side is lower —
+     * the fall does the rest. Four blocks is a safe landing depth: the companion still lands on
+     * solid ground rather than dropping into a ravine, and it stays well below the eight-block
+     * distance at which a companion is rescued out of a fall.</p>
+     */
+    private static final int PARKOUR_DROP = 4;
+    /** Extra route cost for a jump that ends lower than its takeoff point. */
+    private static final double PARKOUR_DROP_COST = 1.2;
     /** Maximum vertical swimming neighbors explored per horizontal step. */
     private static final int MAX_SWIM_VERTICAL_STEP = 1;
 
@@ -400,10 +411,18 @@ final class PathPlanner {
             }
             if (!isStandable(world, landing)) {
                 // The far side may sit one block higher: a player jumps up onto a ledge across
-                // a gap, so the companion may as well. Check that before giving up on this gap.
+                // a gap, so the companion may as well. Check that before looking for a lower
+                // landing or giving up on this gap.
                 Node raised = new Node(landing.x(), landing.y() + PARKOUR_RISE, landing.z());
                 if (isStandable(world, raised) && withinRadius(node, raised, radius)) {
                     result.add(raised);
+                    return;
+                }
+                Node lower = findParkourDropLanding(world, node, landing, radius);
+                if (lower != null) {
+                    // The first gap that reaches a safe floor wins. Scanning farther would only
+                    // aim the jump past the platform the companion is meant to land on.
+                    result.add(lower);
                     return;
                 }
                 // Not a landing yet: a longer jump may still reach solid ground further on.
@@ -417,6 +436,30 @@ final class PathPlanner {
             }
             return;
         }
+    }
+
+    /**
+     * Finds the shallowest safe lower landing beneath the far-side column.
+     *
+     * <p>The fall is only accepted when both blocks of every shaft node are clear, chunks are
+     * loaded, and the landing has safe ground support. Lava and water are not jump landings. The
+     * horizontal gap columns are checked by the caller before this vertical scan.</p>
+     */
+    private static Node findParkourDropLanding(World world, Node origin, Node landing, int radius) {
+        for (int drop = 1; drop <= PARKOUR_DROP; drop++) {
+            Node candidate = new Node(landing.x(), origin.y() - drop, landing.z());
+            if (!withinRadius(origin, candidate, radius) || !isClearColumn(world, candidate)) {
+                return null;
+            }
+            if (isStandable(world, candidate)) {
+                if (isWater(world, candidate)
+                        || isWater(world, new Node(candidate.x(), candidate.y() - 1, candidate.z()))) {
+                    return null;
+                }
+                return candidate;
+            }
+        }
+        return null;
     }
 
     /** Whether the given block has something solid to stand on. */
@@ -434,11 +477,16 @@ final class PathPlanner {
     /** Step cost: horizontal moves cost 1, step up and drops cost a bit more. */
     private static double stepCost(Node from, Node to) {
         double base = 1.0;
+        int horizontal = Math.abs(to.x() - from.x()) + Math.abs(to.z() - from.z());
         if (to.y() > from.y()) {
             return base + 0.6;
         }
         if (to.y() < from.y()) {
-            return base + Math.abs(from.y() - to.y()) * 0.25;
+            double dropCost = Math.abs(from.y() - to.y()) * 0.25;
+            if (horizontal > 1) {
+                dropCost += PARKOUR_DROP_COST;
+            }
+            return base + dropCost;
         }
         return base;
     }
