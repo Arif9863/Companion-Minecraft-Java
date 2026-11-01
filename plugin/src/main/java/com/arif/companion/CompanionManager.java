@@ -224,6 +224,29 @@ public final class CompanionManager {
     private static final double FOOTSTEP_SPEED = 0.055;
     /** Footstep cadence while running, in server ticks (20 ticks = 1 second). */
     private static final long FOOTSTEP_INTERVAL_TICKS = 9L;
+    /**
+     * Upward velocity of a parkour jump.
+     *
+     * <p>A player's own jump is about 0.42; this is only slightly stronger so the companion
+     * clears the gap without looking like it flies.</p>
+     */
+    private static final double PARKOUR_JUMP_VELOCITY = 0.45;
+    /**
+     * Horizontal speed while crossing a gap.
+     *
+     * <p>A sprinting player covers about three blocks in a jump. The companion's walking pace is
+     * far slower, so it sprints for the duration of the jump instead of walking over the gap.</p>
+     */
+    private static final double PARKOUR_CROSS_SPEED = 0.34;
+    /** How many ticks the companion keeps its parkour speed while airborne over a gap. */
+    private static final int PARKOUR_AIR_TICKS = 14;
+    /**
+     * How far ahead the ground is checked for a gap before the companion jumps.
+     *
+     * <p>One block is enough: a jump is committed early, so by the time the companion reaches
+     * the edge it is already in the air.</p>
+     */
+    private static final double GAP_LOOKAHEAD = 1.2;
     /** How far beside the owner a companion appears when summoned or rescued. */
     private static final double SIDE_PLACEMENT_DISTANCE = 1.2;
     /** How far to the owner's left or right a companion stands while following. */
@@ -346,6 +369,8 @@ public final class CompanionManager {
         private long lastSwingTick = Long.MIN_VALUE;
         /** Tick of the last ground footstep sound. */
         private long lastFootstepTick = Long.MIN_VALUE;
+        /** Tick until which the companion keeps its parkour sprint while airborne over a gap. */
+        private long parkourUntilTick = Long.MIN_VALUE;
         /** Whether the mannequin's current pose is swimming, to avoid redundant pose writes. */
         private boolean swimmingPose;
         /** Shared close-mode target selected from a reachable, unblocked nearby spot. */
@@ -1588,8 +1613,13 @@ public final class CompanionManager {
                 // Combat may route down onto a hostile up to three blocks below. Following keeps
                 // the strict one-block descent so it never walks off a ravine while chasing.
                 boolean combatDrop = attackTarget != null;
+                // When the owner stands lower down, the companion comes down after him instead of
+                // giving up: the descent is still checked for a clear shaft and a solid floor.
+                boolean ownerBelow = ownerLocation.getY() < npcLocation.getY() - 1.0;
+                // Parkour is always allowed: a player clears a three-block gap with a jump, and
+                // the companion should be able to follow across the same ravine.
                 state.path = PathPlanner.findPath(npc.getWorld(), npcLocation, targetSpot,
-                        PATH_RADIUS, combatDrop);
+                        PATH_RADIUS, combatDrop, ownerBelow, true);
                 state.waypointIndex = 0;
                 state.plannedGoal = targetSpot.clone();
                 state.lastPlanTick = currentTick;
@@ -1701,6 +1731,24 @@ public final class CompanionManager {
             } else {
                 // Jump when the next waypoint is a step up the companion can clear.
                 double vy = npc.isOnGround() && wy > 0.4 ? 0.42 : npc.getVelocity().getY();
+                // Parkour: a gap in front has to be jumped, because walking into it means falling
+                // into the ravine. The jump is a real one: enough upward force to clear the gap
+                // while the horizontal speed carries the companion over.
+                if (npc.isOnGround() && vy <= 0.05 && isGapAhead(npc, npcLocation, wx, wz)) {
+                    vy = PARKOUR_JUMP_VELOCITY;
+                    // Keep the sprint going while airborne: a walking pace cannot clear three
+                    // blocks, so the companion would fall short of the far side.
+                    state.parkourUntilTick = currentTick + PARKOUR_AIR_TICKS;
+                    speed = PARKOUR_CROSS_SPEED;
+                    vx = (wx / waypointDistance) * speed;
+                    velocityZ = (wz / waypointDistance) * speed;
+                }
+                // Still airborne over the gap: keep the sprint speed so the jump lands.
+                if (currentTick < state.parkourUntilTick && !npc.isOnGround()) {
+                    speed = PARKOUR_CROSS_SPEED;
+                    vx = (wx / waypointDistance) * speed;
+                    velocityZ = (wz / waypointDistance) * speed;
+                }
                 npc.setVelocity(new org.bukkit.util.Vector(vx, vy, velocityZ));
             }
 
@@ -1729,6 +1777,77 @@ public final class CompanionManager {
         return npc.isInWater() || npc.isUnderWater()
                 || PathPlanner.isWaterAt(world, location.getBlockX(), location.getBlockY(), location.getBlockZ())
                 || PathPlanner.isWaterAt(world, location.getBlockX(), location.getBlockY() - 1, location.getBlockZ());
+    }
+
+    /**
+     * Whether there is a gap in the ground ahead of the companion.
+     *
+     * <p>The ground is sampled a little ahead along the direction of travel. A block with no
+     * support beneath it — a ravine or a hole — means the companion has to jump, otherwise it
+     * walks into the void. Water counts as ground, so the companion swims rather than jumps.</p>
+     *
+     * <p>A step down is not a gap: when the ground ahead is exactly one block lower and still
+     * solid, the companion walks down instead of jumping off the edge. The check looks only one
+     * block down, because a ravine also has no floor — only a genuine staircase does.</p>
+     */
+    private static boolean isGapAhead(Mannequin npc, Location npcLocation, double wx, double wz) {
+        double length = Math.sqrt(wx * wx + wz * wz);
+        if (length < 1.0E-3) {
+            return false;
+        }
+        double dirX = wx / length;
+        double dirZ = wz / length;
+        World world = npcLocation.getWorld();
+        int originY = (int) Math.floor(npcLocation.getY());
+        for (double distance = 0.6; distance <= GAP_LOOKAHEAD; distance += 0.4) {
+            int x = (int) Math.floor(npcLocation.getX() + dirX * distance);
+            int z = (int) Math.floor(npcLocation.getZ() + dirZ * distance);
+            if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+                return false;
+            }
+            // The ground continues at this level: nothing to jump over.
+            if (hasFloorAt(world, x, originY - 1, z)) {
+                continue;
+            }
+            // The ground is missing at this level. A solid step exactly one block lower means a
+            // staircase, so the companion walks down rather than jumping.
+            if (hasFloorAt(world, x, originY - 2, z) && isClearColumn(world, x, originY - 1, z)) {
+                return false;
+            }
+            // Nothing below within a block: this is a real gap. A solid block at this level is a
+            // wall in the way, not something to jump over.
+            if (!isClearColumn(world, x, originY, z)) {
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** Whether there is a solid block to stand on at the given position. */
+    private static boolean hasFloorAt(World world, int x, int y, int z) {
+        if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+            return true;
+        }
+        Block block = world.getBlockAt(x, y, z);
+        if (block.getType() == Material.WATER) {
+            return true;
+        }
+        return !block.getCollisionShape().getBoundingBoxes().isEmpty();
+    }
+
+    /** Whether the given column is free for the companion to pass through. */
+    private static boolean isClearColumn(World world, int x, int y, int z) {
+        if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+            return false;
+        }
+        Block feet = world.getBlockAt(x, y, z);
+        Block head = world.getBlockAt(x, y + 1, z);
+        if (feet.getType() == Material.WATER || head.getType() == Material.WATER) {
+            return false;
+        }
+        return feet.getCollisionShape().getBoundingBoxes().isEmpty()
+                && head.getCollisionShape().getBoundingBoxes().isEmpty();
     }
 
     private void updateMovementPose(Mannequin npc, FollowState state, boolean inWater) {

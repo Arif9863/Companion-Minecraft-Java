@@ -41,6 +41,23 @@ final class PathPlanner {
     private static final int MAX_DROP = 1;
     /** Combat may descend up to three blocks towards a hostile target below the companion. */
     private static final int MAX_COMBAT_DROP = 3;
+    /**
+     * How far the companion may drop in one step while the owner is below it.
+     *
+     * <p>When the owner stands lower down, the companion is expected to come down after him
+     * instead of giving up and teleporting. The descent is still checked for a clear shaft and a
+     * solid floor, so this never turns into a fall into the void.</p>
+     */
+    private static final int MAX_OWNER_DESCENT = 12;
+    /**
+     * How many blocks a parkour jump may clear.
+     *
+     * <p>A player jumps about 1.25 blocks and covers roughly three blocks of ground, so a gap of
+     * up to three blocks is something a player clears easily. The companion jumps the same way.</p>
+     */
+    private static final int PARKOUR_GAP = 3;
+    /** Maximum vertical rise a single parkour jump can reach. */
+    private static final int PARKOUR_RISE = 1;
     /** Maximum vertical swimming neighbors explored per horizontal step. */
     private static final int MAX_SWIM_VERTICAL_STEP = 1;
 
@@ -71,10 +88,12 @@ final class PathPlanner {
      * @param goal        desired goal position
      * @param radius      horizontal search radius in blocks
      * @param combatDrop  when true, allow up to three-block safe descents toward a mob
+     * @param ownerBelow  when true, the owner is lower down, so the companion may descend freely
+     * @param parkour     when true, gaps of up to three blocks may be jumped
      * @return waypoint centres from start towards the goal, or an empty list when no route exists
      */
     static List<Vector> findPath(World world, Location start, Location goal, int radius,
-                                 boolean combatDrop) {
+                                 boolean combatDrop, boolean ownerBelow, boolean parkour) {
         Node startNode = toNode(start);
         Node goalNode = toNode(goal);
 
@@ -115,7 +134,7 @@ final class PathPlanner {
                 return buildWaypoints(cameFrom, node, start);
             }
 
-            for (Node neighbour : neighbours(world, node, radius, false, combatDrop)) {
+            for (Node neighbour : neighbours(world, node, radius, false, combatDrop, ownerBelow, parkour)) {
                 if (closed.contains(neighbour)) {
                     continue;
                 }
@@ -163,7 +182,7 @@ final class PathPlanner {
         while (!queue.isEmpty() && expanded < nodeBudget) {
             Node current = queue.remove();
             expanded++;
-            for (Node next : neighbours(world, current, radius, true, false)) {
+            for (Node next : neighbours(world, current, radius, true, false, false, false)) {
                 if (visited.add(next)) {
                     queue.add(next);
                 }
@@ -231,7 +250,7 @@ final class PathPlanner {
         while (!queue.isEmpty() && expanded < nodeBudget) {
             Node current = queue.remove();
             expanded++;
-            for (Node next : neighbours(world, current, radius, false, false)) {
+            for (Node next : neighbours(world, current, radius, false, false, false, false)) {
                 if (visited.add(next)) {
                     queue.add(next);
                 }
@@ -254,9 +273,12 @@ final class PathPlanner {
      *
      * @param combatDrop when true, drops of up to three blocks are allowed, but only onto solid
      *                    ground — a fall into the void is still never a route
+     * @param ownerBelow when true, the owner stands lower down, so the companion may descend
+     *                   further in one step instead of giving up
+     * @param parkour    when true, a gap of up to three blocks may be jumped over
      */
     private static List<Node> neighbours(World world, Node node, int radius, boolean relaxed,
-                                         boolean combatDrop) {
+                                         boolean combatDrop, boolean ownerBelow, boolean parkour) {
         List<Node> result = new ArrayList<>(12);
         int[][] horizontal = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
@@ -287,7 +309,8 @@ final class PathPlanner {
                     result.add(down);
                 }
             } else {
-                int maxDrop = combatDrop ? MAX_COMBAT_DROP : MAX_DROP;
+                int maxDrop = ownerBelow ? MAX_OWNER_DESCENT
+                        : (combatDrop ? MAX_COMBAT_DROP : MAX_DROP);
                 for (int drop = 1; drop <= maxDrop; drop++) {
                     Node down = new Node(nx, node.y() - drop, nz);
                     if (!withinRadius(node, down, radius)) {
@@ -304,6 +327,13 @@ final class PathPlanner {
                     }
                     // Open air below — keep looking for the floor, up to the allowed depth.
                 }
+            }
+
+            // Parkour: when the next block is a gap, the companion jumps it the way a player
+            // would. The landing block must be standable and within a step or two of height,
+            // and the space in between must be open air.
+            if (parkour && !relaxed) {
+                addParkourJumps(world, node, offset, radius, result);
             }
 
             // Swimming: while submerged, allow gentle vertical movement so the companion can
@@ -332,6 +362,60 @@ final class PathPlanner {
             }
         }
         return result;
+    }
+
+    /**
+     * Adds the landing blocks a parkour jump can reach across a gap.
+     *
+     * <p>A player jumps about 1.25 blocks high and covers roughly three blocks of ground, so
+     * the companion does the same: a gap of up to {@link #PARKOUR_GAP} blocks is jumped when the
+     * landing block is solid, reachable in height, and the space above the gap is open.</p>
+     *
+     * @param offset the horizontal direction being explored
+     */
+    private static void addParkourJumps(World world, Node node, int[] offset, int radius,
+                                         List<Node> result) {
+        int dx = offset[0];
+        int dz = offset[1];
+        // The gap is measured from the block in front of the companion. A landing further along
+        // is only reachable when every block in between is open air with no floor beneath it.
+        for (int gap = 1; gap <= PARKOUR_GAP; gap++) {
+            // The block right in front must be open, otherwise this is a wall, not a gap.
+            Node front = new Node(node.x() + dx * gap, node.y(), node.z() + dz * gap);
+            if (!isClearColumn(world, front)) {
+                return;
+            }
+            // The landing block is one further along.
+            Node landing = new Node(node.x() + dx * (gap + 1), node.y(), node.z() + dz * (gap + 1));
+            if (!isStandable(world, landing) || !withinRadius(node, landing, radius)) {
+                return;
+            }
+            // The gap itself must have no floor: otherwise the companion could simply walk
+            // across it and no jump is needed.
+            Node gapFloor = new Node(front.x(), front.y() - 1, front.z());
+            if (hasFloor(world, gapFloor)) {
+                return;
+            }
+            result.add(landing);
+            // A jump of up to one block up is also possible, so a ledge across the gap counts.
+            Node raised = new Node(landing.x(), landing.y() + PARKOUR_RISE, landing.z());
+            if (isStandable(world, raised) && withinRadius(node, raised, radius)) {
+                result.add(raised);
+            }
+            return;
+        }
+    }
+
+    /** Whether the given block has something solid to stand on. */
+    private static boolean hasFloor(World world, Node node) {
+        if (!isChunkLoaded(world, node)) {
+            return true;
+        }
+        Block block = world.getBlockAt(node.x(), node.y(), node.z());
+        if (block.getType() == Material.WATER) {
+            return true;
+        }
+        return !hasNoCollision(block);
     }
 
     /** Step cost: horizontal moves cost 1, step up and drops cost a bit more. */
