@@ -63,6 +63,8 @@ Commands intentionally keep the `-npc` suffix so they do not replace the existin
 
 The Skript `/yui` and `/sandrone` commands check the same list before they say anything. The plugin marks every allowed player with the `companion_npc_user` scoreboard tag, and the scripts refuse outsiders with their own line ("Hati dan kasih Yui hanya untuk Arif") instead of the friendly greeting. The tag is set on join and refreshed by `/companionnpc reload`.
 
+While a companion mannequin is alive, the plugin also sets `companion_active_yui`, `companion_active_sandrone`, or `companion_active_eris` on that companion's owner. Skript uses those tags (not the older `{-yui-active::...}` flags alone) for heal/absorption, DuoVoice, and 3D sound routing, so another player never receives your companion's buffs or hears their lines from the wrong direction.
+
 ## Eris (standalone companion)
 
 Eris is a companion of her own, not a third member of the Yui–Sandrone pair.

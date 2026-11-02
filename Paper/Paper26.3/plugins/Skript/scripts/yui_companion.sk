@@ -111,9 +111,29 @@ function duovoice_yui_say(p: player, kind: text) :: boolean:
     if {_snd} is not set:
         set {_snd} to "{@voice_placeholder_sound}"
     set {-voice::playing::%{_id}%} to {_snd}
-    broadcast "&d[Yui] %{_line}%"
-    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "yui")
+    send "&d[Yui] %{_line}%" to {_p}
+    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "yui") to {_p}
     return true
+
+# Sinkronkan flag Skript dengan tag companion_active_* dari plugin Java.
+# Tanpa ini, variabel lama (mis. setelah Ferdi coba /sandrone) bisa tetap nyala
+# walau NPC-nya tidak pernah muncul.
+function companion_sync_skript_flags(p: player):
+    set {_id} to uuid of {_p}
+    if scoreboard tags of {_p} does not contain "companion_active_yui":
+        delete {-yui-active::%{_id}%}
+        delete {-yuifu::%{_id}%}
+        delete {-yuimsg::%{_id}%}
+        delete {-yuifollow::%{_id}%}
+    if scoreboard tags of {_p} does not contain "companion_active_sandrone":
+        delete {-sandrone-active::%{_id}%}
+        delete {-sandfu::%{_id}%}
+        delete {-sandmsg::%{_id}%}
+        delete {-sandfollow::%{_id}%}
+
+on join:
+    wait 1 tick
+    companion_sync_skript_flags(player)
 
 # ==== Kantong pendamping: mesin bersama (juga dipakai file Sandrone) ====
 # Isi disimpan di {companion::storage::...} TANPA tanda minus, jadi ikut
@@ -189,9 +209,9 @@ function duovoice_speak(p: player, kind: text) :: boolean:
         if {_ready} is true:
             set {_yui} to false
             set {_sand} to false
-            if {-yui-active::%{_id}%} is true:
+            if scoreboard tags of {_p} contains "companion_active_yui":
                 set {_yui} to true
-            if {-sandrone-active::%{_id}%} is true:
+            if scoreboard tags of {_p} contains "companion_active_sandrone":
                 set {_sand} to true
             set {_prio} to {@prio_idle}
             set {_hold} to {@hold_idle_seconds}
@@ -226,9 +246,9 @@ on death:
         stop trigger
     set {_id} to uuid of {_p}
     set {_active} to false
-    if {-yui-active::%{_id}%} is true:
+    if scoreboard tags of {_p} contains "companion_active_yui":
         set {_active} to true
-    if {-sandrone-active::%{_id}%} is true:
+    if scoreboard tags of {_p} contains "companion_active_sandrone":
         set {_active} to true
     if {_active} is false:
         stop trigger
@@ -275,9 +295,9 @@ every 1 second:
                     delete {-voice::busy_prio::%{_id}%}
         if {-voice::enabled} is true:
             set {_has} to false
-            if {-yui-active::%{_id}%} is true:
+            if scoreboard tags of loop-player contains "companion_active_yui":
                 set {_has} to true
-            if {-sandrone-active::%{_id}%} is true:
+            if scoreboard tags of loop-player contains "companion_active_sandrone":
                 set {_has} to true
             if {_has} is true:
                 if loop-player is alive:
@@ -321,6 +341,7 @@ command /yui:
     description: Panggil atau sembunyikan Yui
     trigger:
         if scoreboard tags of player does not contain "companion_npc_user":
+            companion_sync_skript_flags(player)
             send "&d[Yui] Hati dan kasih Yui hanya untuk Arif" to player
             play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
             stop trigger
@@ -367,7 +388,7 @@ every 1 second:
 
 every {@heal_interval}:
     loop all players:
-        if {-yui-active::%loop-player's uuid%} is true:
+        if scoreboard tags of loop-player contains "companion_active_yui":
             if loop-player is alive:
                 if health of loop-player is less than maximum health of loop-player:
                     heal loop-player by {@heal_hearts} hearts
@@ -428,7 +449,7 @@ on rightclick on a mannequin:
         stop trigger
     set {_nid} to uuid of clicked entity
     if {-dv::owner::%{_nid}%} is not player's uuid:
-        broadcast "&d[Yui] Hati dan kasih Yui hanya untuk Arif"
+        send "&d[Yui] Hati dan kasih Yui hanya untuk Arif" to player
         play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
         stop trigger
     if {-yui-active::%player's uuid%} is not true:

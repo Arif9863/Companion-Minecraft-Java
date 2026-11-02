@@ -41,6 +41,9 @@ public final class CompanionListener implements Listener {
         // Mark the player according to the configured companion owners, so the Skript commands
         // /yui and /sandrone know who may use them.
         plugin.refreshCompanionUserTag(player);
+        // Buffs and DuoVoice in Skript follow companion_active_* tags; drop any that survived a
+        // reload while the mannequin is gone.
+        plugin.getManager().syncActiveCompanionTags(player);
         NamespacedKey obsolete = new NamespacedKey(plugin, "control");
         ItemStack[] contents = player.getInventory().getContents();
         boolean removed = false;

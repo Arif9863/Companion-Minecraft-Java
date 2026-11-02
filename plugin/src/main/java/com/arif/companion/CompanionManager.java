@@ -887,8 +887,21 @@ public final class CompanionManager {
         }
 
         ownerToNpc.put(key, npc.getUniqueId());
+        // Tell the owner that this companion really exists. The Skript scripts use this tag as
+        // the authority for granting effects: the companion has to be on the world before the
+        // owner may receive its buffs.
+        owner.addScoreboardTag(activeTag(kind));
         startFollowing(key, owner, npc, initialFormationYaw);
         plugin.getLogger().info(() -> "Spawned " + kind + " mannequin for " + owner.getName());
+    }
+
+    /**
+     * The scoreboard tag marking that a player currently has this companion on the world.
+     *
+     * @param archetype "yui", "sandrone", or "eris"
+     */
+    static String activeTag(String archetype) {
+        return "companion_active_" + archetype.toLowerCase(Locale.ROOT);
     }
 
     /** Creates and configures the mannequin, or returns null when spawning fails. */
@@ -2906,9 +2919,12 @@ public final class CompanionManager {
 
     /** Removes the companion of the given archetype owned by the given player, if any. */
     public void despawn(Player owner, String archetype) {
-        CompanionKey key = new CompanionKey(owner.getUniqueId(), archetype.toLowerCase(Locale.ROOT));
+        String kind = archetype.toLowerCase(Locale.ROOT);
+        CompanionKey key = new CompanionKey(owner.getUniqueId(), kind);
         cancel(key);
         UUID npcId = ownerToNpc.remove(key);
+        // The companion is gone, so its owner may no longer receive its effects.
+        owner.removeScoreboardTag(activeTag(kind));
         if (npcId == null) {
             return;
         }
@@ -2933,6 +2949,26 @@ public final class CompanionManager {
     }
 
     /**
+     * Keeps {@link #activeTag} scoreboard tags aligned with live companions.
+     *
+     * <p>Skript uses these tags to decide who may receive Yui/Sandrone buffs and voice lines.
+     * After a crash, reload, or {@link #despawnEverything()}, stale tags must not linger on the
+     * owner.</p>
+     */
+    public void syncActiveCompanionTags(Player player) {
+        UUID ownerId = player.getUniqueId();
+        for (String archetype : ARCHETYPES) {
+            String tag = activeTag(archetype);
+            boolean live = ownerToNpc.containsKey(new CompanionKey(ownerId, archetype));
+            if (live) {
+                player.addScoreboardTag(tag);
+            } else {
+                player.removeScoreboardTag(tag);
+            }
+        }
+    }
+
+    /**
      * Removes every companion in the world, including ones left behind by a crash.
      *
      * <p>Removal is by scoreboard tag rather than by bookkeeping, so strays from a previous run are
@@ -2949,6 +2985,11 @@ public final class CompanionManager {
         }
         followStates.clear();
         ownerToNpc.clear();
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            for (String archetype : ARCHETYPES) {
+                player.removeScoreboardTag(activeTag(archetype));
+            }
+        }
         for (World world : Bukkit.getWorlds()) {
             List<Entity> tagged = world.getEntities().stream()
                     .filter(entity -> entity.getScoreboardTags().contains(TAG))

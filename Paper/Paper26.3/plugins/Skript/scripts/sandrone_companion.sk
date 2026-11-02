@@ -76,14 +76,15 @@ function duovoice_sandrone_say(p: player, kind: text) :: boolean:
     if {_snd} is not set:
         set {_snd} to "{@voice_placeholder_sound}"
     set {-voice::playing::%{_id}%} to {_snd}
-    broadcast "&b[Sandrone] %{_line}%"
-    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "sandrone")
+    send "&b[Sandrone] %{_line}%" to {_p}
+    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "sandrone") to {_p}
     return true
 
 command /sandrone:
     description: Panggil atau sembunyikan Sandrone
     trigger:
         if scoreboard tags of player does not contain "companion_npc_user":
+            companion_sync_skript_flags(player)
             send "&b[Sandrone] Cihhh...saya hanya membantu Arif saja!!!" to player
             play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
             stop trigger
@@ -130,7 +131,7 @@ every 1 second:
 
 every {@regen_interval}:
     loop all players:
-        if {-sandrone-active::%loop-player's uuid%} is true:
+        if scoreboard tags of loop-player contains "companion_active_sandrone":
             if loop-player is alive:
                 # Absorption III (hati emas). Diberi ulang tiap siklus 45 detik
                 # dengan durasi 1 menit, jadi efek tidak pernah keburu habis.
@@ -176,7 +177,7 @@ on rightclick on a mannequin:
     # Kunci pemilik: hanya pemilik NPC ini yang boleh membuka kantongnya.
     set {_nid} to uuid of clicked entity
     if {-dv::owner::%{_nid}%} is not player's uuid:
-        broadcast "&b[Sandrone] Cihhh...saya hanya membantu Arif saja!!!"
+        send "&b[Sandrone] Cihhh...saya hanya membantu Arif saja!!!" to player
         play sound "{@sound_deny}" in voice category with volume {@sound_volume} and pitch 1 to player
         stop trigger
     dv_storage_open(player, "sandrone")
