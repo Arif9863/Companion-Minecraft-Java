@@ -4,14 +4,17 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Trident;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
+import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -108,6 +111,34 @@ public final class CompanionListener implements Listener {
         }
         plugin.getManager().noteErisDamage(event.getEntity().getUniqueId(),
                 mannequin.getUniqueId());
+    }
+
+    /**
+     * Handles a trident a companion threw.
+     *
+     * <p>The trident is fired by the owner, so its damage is already credited to him. A mob that
+     * was coming for the companion is handed back to the owner.</p>
+     */
+    @EventHandler
+    public void onTridentHit(EntityDamageByEntityEvent event) {
+        if (!(event.getDamager() instanceof Trident trident)
+                || !trident.getScoreboardTags().contains(RangedTridentAttack.PROJECTILE_TAG)) {
+            return;
+        }
+        Entity hit = event.getEntity();
+        if (hit instanceof LivingEntity living) {
+            plugin.getManager().releaseProjectileAggro(living, trident);
+        }
+    }
+
+    /** Removes a thrown trident once it lands, so no stray weapons are left lying around. */
+    @EventHandler
+    public void onTridentLand(ProjectileHitEvent event) {
+        if (!(event.getEntity() instanceof Trident trident)
+                || !trident.getScoreboardTags().contains(RangedTridentAttack.PROJECTILE_TAG)) {
+            return;
+        }
+        trident.remove();
     }
 
     /** Counts a mob killed by Eris, which is what unlocks her Strength I. */

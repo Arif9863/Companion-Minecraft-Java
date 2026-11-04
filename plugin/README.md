@@ -20,10 +20,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-plugin.ps1
 - `.\rebuild-pack.ps1` rebuilds the voice resource pack the same way; pass a server
   folder as its first argument when there is more than one.
 
+### What the build script does, and what it does not
+
+The build script and the in-game config updater are two separate things:
+
+| | Build script (`build-plugin.ps1`) | Config updater (in the plugin) |
+|---|---|---|
+| Produces | The plugin JAR | The `config.yml` on the server |
+| Copies into `plugins/` | Yes, unless `-SkipDeploy` | No |
+| Updates `config.yml` | No | Yes, adds missing options only |
+| Where it runs | Your development machine | On the server, on startup |
+
+So a normal release is: run the build script, restart the server, and the config on that
+server gains the new options by itself. You do **not** copy a `config.yml` from
+`plugin/build/classes/` onto a server — that file is the packaged default, and replacing a
+server's config with it would throw away the owner's own settings.
+
+With `-SkipDeploy` the JAR is only written to `plugin/build/`; the server keeps running the
+old version until the JAR is copied into its `plugins/` folder by hand.
+
 1. Stop the production Paper server with `stop` in its console and wait for `Done`/shutdown completion.
 2. Run `build-plugin.ps1` as above, or `mvn package` from `plugin/`.
 3. Make sure the resource pack is enabled on the client. For server auto-download, host the ZIP at HTTPS and configure `resource-pack` in `server.properties`; manual client activation also works.
-4. Start Paper once. Plugin creates `plugins/CompanionNPCs/config.yml`.
+4. Start Paper once. Plugin creates `plugins/CompanionNPCs/config.yml` if it is missing, and
+   adds any options a newer plugin version knows about to an existing one.
 
 ### Moving to another machine
 
@@ -43,15 +63,16 @@ there yourself, or rely on the Maven fallback above.
 - `/sandrone-npc` (alias `/sandrone-chan`), `/sandrone-npc off` — same for Sandrone.
 - `/kesini [yui|sandrone|semua]` — switch the companions to **CLOSE** mode.
 - `/ikut [yui|sandrone|semua]` — switch them back to **FOLLOW** mode.
-- `/serang [yui|sandrone|semua]` — let the companions fight hostile mobs for you.
-- `/tahan [yui|sandrone|semua]` — hold their strikes again.
+- `/tunggu [yui|sandrone|semua]` — switch them to **WAIT** mode: they stay where they are.
 
-These four commands cover **Yui and Sandrone only**. `semua` means the pair, never Eris — she has
-her own commands below, and `/serang eris` is refused with a pointer to them.
+These commands cover **Yui and Sandrone only**. `semua` means the pair, never Eris — she has
+her own commands below.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
+- `/companionnpc config` — add the options this plugin version knows about to the config file
+  on disk, without touching the values that are already set.
 - `/eris` (alias `/eris-chan`) — call Eris, the standalone companion.
-- `/eris ikut`, `/eris kesini`, `/eris serang`, `/eris tahan`, `/eris off` — control her.
+- `/eris ikut`, `/eris kesini`, `/eris tunggu`, `/eris off` — control her.
 
 **Yui and Sandrone are UUID-locked.** Only UUIDs listed in `companion-owners` in
 `plugins/CompanionNPCs/config.yml` may call them or use their behaviour commands; OP status does
@@ -88,28 +109,43 @@ Eris is a companion of her own, not a third member of the Yui–Sandrone pair.
 - **No danger markers.** The skeleton/creeper markers belong to Yui and Sandrone; Eris marks
   nothing, so she never duplicates a partner's alert.
 
-## Defensive melee (`/serang`)
+## Defensive melee (automatic)
 
-An independent toggle rather than a third mode, so it combines with either FOLLOW or CLOSE: a
-companion can hold the formation and still fight.
+Defending is automatic: there is no command for it any more. A companion always reacts to a
+hostile mob that is coming for its owner or for the companion itself, in every mode.
 
-- **Defensive only.** A companion engages a hostile mob only once that mob is coming for you or
-  for a companion, and only while it is within `attack-search-radius` blocks of you. A mob that is
-  merely standing nearby is ignored.
+- **Defensive only.** A companion engages a hostile mob only once that mob is coming for the
+  owner or for a companion. A mob that is merely standing nearby is ignored.
+- **A waiting companion also holds its ground.** In WAIT it engages a hostile that walks into
+  `wait-threat-radius` blocks of the spot it was told to wait at, even if that mob has not
+  chosen a target yet. The threat requirement still stands on its own — the two are combined,
+  not swapped: a mob that comes for the party counts in every mode, and the territorial rule
+  adds the ones that merely intrude. A mob further out is left alone rather than chased.
+- **Neutral hostiles are left alone.** An Enderman counts as a threat only once it actually
+  comes for the owner or a companion — a waiting companion does not pick a fight with one that
+  merely strolls past, since it only strikes when provoked and can turn on the owner instead.
+- **The search is centred on the companion**, never on the owner. This is what makes a waiting
+  companion stay where it was told to wait instead of running off to rescue the owner across the
+  map — and then standing where the last mob died.
+- **A waiting companion fights on its own ground.** It engages a hostile that comes within
+  `wait-threat-radius` blocks of the spot it was told to wait at. It is on a leash there: if the
+  mob drags it further than that radius from its spot, it drops the fight and walks back. Once the
+  fight is over it returns to its spot and resumes its wander. Raising this radius widens the
+  threats it reacts to; it does not change the 5-block idle wander.
 - **It walks up to the mob and looks at it** while closing in, then keeps facing it while it
   strikes — so the fight reads like a player fighting, not like a turret.
 - **It swings like a player.** The arm animation is the player's own swing, played every
   `attack-cooldown-ticks` ticks while within the vanilla melee reach of 3 blocks; the swing deals
   `attack-damage`. The companion closes to about 1.4 blocks and stops there, so it settles
   instead of shoving into the mob, and it keeps its head on the target the whole way.
-- **Danger markers (`/serang`)** use visible-but-not-wall-penetrating particles: Yui marks
-  skeletons; Sandrone marks creepers, each within its configured radius around the owner.
+- **Danger markers** use visible-but-not-wall-penetrating particles: Yui marks skeletons;
+  Sandrone marks creepers, each within its configured radius around the companion.
   The companion announces a newly detected threat in chat (maximum one alert every 10 seconds).
-  Markers stop when `/tahan` is used; peaceful mobs are never marked.
+  Peaceful mobs are never marked.
 - **It is never a target.** Any mob that would choose a companion is refused, so it keeps coming
   for you instead. A companion that had drawn aggro has it handed back to you on the next swing.
-- **Armed only while fighting.** The companion holds an iron sword while `/serang` is active and
-  puts it away on `/tahan`.
+- **Armed only while fighting.** The companion holds an iron sword only while it actually has a
+  mob to fight, and puts it away again when the fight is over.
 - Combats take precedence over the formation spot: a companion leaves its side while chasing, and
   returns as soon as the fight ends.
 
@@ -117,13 +153,19 @@ companion can hold the formation and still fight.
 
 A companion has exactly one standing behaviour at a time. **The mode stays in force until another command replaces it** — there is no timeout, and nothing silently reverts it.
 
-| | FOLLOW (`/ikut`) | CLOSE (`/kesini`) |
-|---|---|---|
-| Position | Formation: Yui on your left, Sandrone on your right | As close as the geometry allows, no formation |
-| Standing distance | `comfort-distance` (3.0 blocks) | `close-distance` (1.8 blocks) |
-| Emergency teleport target | Its own formation side | A spot in the room you can walk to |
+| | FOLLOW (`/ikut`) | CLOSE (`/kesini`) | WAIT (`/tunggu`) |
+|---|---|---|---|
+| Position | Formation: Yui on your left, Sandrone on your right | As close as the geometry allows, no formation | Stays where it was told to wait |
+| Standing distance | `comfort-distance` (3.0 blocks) | `close-distance` (1.8 blocks) | Free-roams up to 5 blocks around its own spot |
+| Fights | Hostile mobs coming for you or a companion | Same | Hostile mobs coming inside `wait-threat-radius` of its own spot — it stays on its ground |
+| Emergency teleport target | Its own formation side | A spot in the room you can walk to | None — it is never pulled back to you |
 
 - FOLLOW is the default: a freshly spawned companion starts in this mode.
+- WAIT anchors the spot the companion was standing in when the command was given. It free-roams
+  around that spot the way a mob does — picking a direction, walking it for a while, then turning
+  or resting — rather than marching to a fixed point and standing there. It keeps watching you
+  from where it stands, and it is never rescued by teleport: being far from you is exactly what
+  you asked for.
 - The chosen mode is saved per player in `plugins/CompanionNPCs/modes.yml` and restored when the companion is respawned or the server restarts.
 
 ## Movement rules
@@ -160,6 +202,22 @@ Set `yui.skin-url` and/or `sandrone.skin-url` in `plugins/CompanionNPCs/config.y
 
 `plugins/CompanionNPCs/config.yml`:
 
+### Keeping the config file up to date
+
+Bukkit only writes the bundled config when there is none yet, so a config created by an older
+version of the plugin keeps its old shape: new options never appear in the file, and the plugin
+silently uses its built-in defaults for them.
+
+The plugin therefore merges the missing options into the file on disk — on startup and on
+`/companionnpc config`. The merge only adds what is missing:
+
+- values that are already set keep their value and their place in the file
+- missing options are appended, together with the comment that explains them
+- comments that are already in the file are left alone
+
+So a config from an old version grows the new options on its own, and hand-edited values are
+never overwritten. `/companionnpc reload` re-reads the file without restarting the server.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `comfort-distance` | 3.0 | Standing distance in FOLLOW mode |
@@ -168,11 +226,12 @@ Set `yui.skin-url` and/or `sandrone.skin-url` in `plugins/CompanionNPCs/config.y
 | `close-teleport-distance` | 24 | Emergency teleport radius in CLOSE mode (16–32) |
 | `idle-look-mob-radius` | 12 | How far an idle companion glances at a nearby mob (4–24) |
 | `idle-look-standstill-distance` | 6 | How far a still companion may glance at mobs (2–12) |
-| `attack-search-radius` | 8.0 | How far a hostile mob may be from you for a companion to defend you (2–16) |
+| `attack-search-radius` | 8.0 | How far a hostile mob may be from a companion for it to defend (2–16) |
+| `wait-threat-radius` | 12.0 | How far a waiting companion reacts to hostile mobs around its spot (4–48) |
 | `attack-damage` | 5.0 | Damage per melee swing (1–40) |
 | `attack-cooldown-ticks` | 16 | Ticks between two swings, 20 = one second (4–40) |
-| `yui-skeleton-mark-radius` | 16.0 | How far Yui marks skeletons around you (10–24) |
-| `sandrone-creeper-mark-radius` | 16.0 | How far Sandrone marks creepers around you (10–24) |
+| `yui-skeleton-mark-radius` | 16.0 | How far Yui marks skeletons around itself (10–24) |
+| `sandrone-creeper-mark-radius` | 16.0 | How far Sandrone marks creepers around itself (10–24) |
 | `pack-http-server` | true | Serve the resource pack over HTTP |
 | `pack-http-port` | 8765 | Port for that HTTP server |
 | `debug-self-test` | false | Spawn both NPCs at startup — test server only |

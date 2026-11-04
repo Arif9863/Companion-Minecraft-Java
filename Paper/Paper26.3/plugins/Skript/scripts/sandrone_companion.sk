@@ -10,6 +10,7 @@ options:
     sound_regen: companion:sandrone.regen
     sound_followup: companion:sandrone.followup
     sound_volume: 1
+    absorption_voice_cooldown: 60 seconds
 
     # ==== DuoVoice ====
     # Mesin (klaim giliran, cooldown, pemicu) ada di yui_companion.sk.
@@ -77,7 +78,10 @@ function duovoice_sandrone_say(p: player, kind: text) :: boolean:
         set {_snd} to "{@voice_placeholder_sound}"
     set {-voice::playing::%{_id}%} to {_snd}
     send "&b[Sandrone] %{_line}%" to {_p}
-    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "sandrone") to {_p}
+    # Suara hanya diputar kalau Sandrone masih ada; kalau tidak, suara companion harus
+    # hilang, bukan pindah ke telinga owner.
+    if duovoice_companion_found({_p}, "sandrone") is true:
+        play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "sandrone") to {_p}
     return true
 
 command /sandrone:
@@ -126,8 +130,12 @@ every 1 second:
                 if {_claimed} is true:
                     send "&b[Sandrone] Jangan salah paham, aku hanya membantumu kali ini ya Arif..." to loop-player
                     set {-voice::playing::%loop-player's uuid%} to "{@sound_followup}"
-                    play sound "{@sound_followup}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
-                    play sound "entity.experience_orb.pickup" to loop-player
+                    # Suara keluar dari badan Sandrone, bukan dari owner. Kalau Sandrone sudah
+                    # tidak ada, suaranya tidak diputar sama sekali.
+                    if duovoice_companion_found(loop-player, "sandrone") is true:
+                        set {_loc} to duovoice_sound_location(loop-player, "sandrone")
+                        play sound "{@sound_followup}" in voice category with volume {@sound_volume} and pitch 1 at {_loc} to loop-player
+                        play sound "entity.experience_orb.pickup" at {_loc} to loop-player
 
 every {@regen_interval}:
     loop all players:
@@ -140,17 +148,21 @@ every {@regen_interval}:
                 add 1 to {-sandmsg::%loop-player's uuid%}
                 add 1 to {-sandfollow::%loop-player's uuid%}
                 set {_say} to false
-                if {-sandmsg::%loop-player's uuid%} is greater than or equal to {@message_every}:
+                set {_last_voice} to {-sandrone-absorption-voice::%loop-player's uuid%}
+                if {_last_voice} is not set:
+                    set {_say} to true
+                else if time since {_last_voice} is greater than or equal to {@absorption_voice_cooldown}:
                     set {_say} to true
                 if {_say} is true:
                     set {-sandmsg::%loop-player's uuid%} to 0
-                    # Pesan SELALU tampil; klaim hanya agar idle tidak menumpuk di atasnya.
                     set {_claimed} to duovoice_claim(loop-player, {@prio_support}, {@hold_support_seconds})
                     if {_claimed} is true:
+                        set {-sandrone-absorption-voice::%loop-player's uuid%} to now
                         set {-voice::playing::%loop-player's uuid%} to "{@sound_regen}"
-                    send action bar "&bBiar nona Sandrone yang melindungimu hmmpphh..." to loop-player
-                    send "&b[Sandrone] Mundurlah Arif.....biar nona Sandrone yang menolongmu" to loop-player
-                    play sound "{@sound_regen}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
+                        send action bar "&bBiar nona Sandrone yang melindungimu hmmpphh..." to loop-player
+                        send "&b[Sandrone] Mundurlah Arif.....biar nona Sandrone yang menolongmu" to loop-player
+                        if duovoice_companion_found(loop-player, "sandrone") is true:
+                            play sound "{@sound_regen}" in voice category with volume {@sound_volume} and pitch 1 at duovoice_sound_location(loop-player, "sandrone") to loop-player
                 set {_follow} to false
                 if {-sandfollow::%loop-player's uuid%} is greater than or equal to {@followup_every}:
                     set {_follow} to true

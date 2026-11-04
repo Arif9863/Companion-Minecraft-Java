@@ -80,18 +80,32 @@ function duovoice_claim(p: player, priority: number, hold: number) :: boolean:
     set {-voice::busy_prio::%{_id}%} to {_priority}
     return true
 
-# Posisi suara: mannequin pendamping terdekat (per arketipe), fallback ke posisi pemain.
+# Posisi suara: mannequin pendamping terdekat (per arketipe).
+# Kalau companion tidak ada (sudah hilang atau terlalu jauh), fungsi ini mengembalikan
+# lokasi kosong, BUKAN posisi owner. Suara companion tidak boleh keluar dari owner:
+# kalau owner menjauh, suara companion harus hilang, bukan pindah ke telinga owner.
+# Radiusnya longgar: companion yang sedang tunggu owner bisa jauh, dan suaranya harus tetap
+# keluar dari badannya sendiri.
 function duovoice_sound_location(p: player, kind: text) :: location:
     set {_best} to location of {_p}
     set {_best_dist} to 9999
     set {_tag} to "companion_%{_kind}%"
-    loop all mannequins within radius 32 blocks of location of {_p}:
+    loop all mannequins within radius 256 blocks of location of {_p}:
         if scoreboard tags of loop-entity contains {_tag}:
             set {_distance} to distance between location of loop-entity and location of {_p}
             if {_distance} is less than {_best_dist}:
                 set {_best_dist} to {_distance}
                 set {_best} to location of loop-entity
     return {_best}
+
+# Apakah companion dengan arketipe ini masih ada di dekat owner?
+# Dipakai untuk memutuskan: suara hanya boleh diputar kalau companion-nya benar-benar ada.
+function duovoice_companion_found(p: player, kind: text) :: boolean:
+    set {_tag} to "companion_%{_kind}%"
+    loop all mannequins within radius 256 blocks of location of {_p}:
+        if scoreboard tags of loop-entity contains {_tag}:
+            return true
+    return false
 
 # ==== DuoVoice: pemilihan ucapan Yui (anti-ulang per pemain) ====
 function duovoice_yui_say(p: player, kind: text) :: boolean:
@@ -112,7 +126,10 @@ function duovoice_yui_say(p: player, kind: text) :: boolean:
         set {_snd} to "{@voice_placeholder_sound}"
     set {-voice::playing::%{_id}%} to {_snd}
     send "&d[Yui] %{_line}%" to {_p}
-    play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "yui") to {_p}
+    # Suara hanya diputar kalau Yui masih ada; kalau tidak, suara companion harus hilang,
+    # bukan pindah ke telinga owner.
+    if duovoice_companion_found({_p}, "yui") is true:
+        play sound "%{_snd}%" in voice category with volume 1 and pitch 1 at duovoice_sound_location({_p}, "yui") to {_p}
     return true
 
 # Sinkronkan flag Skript dengan tag companion_active_* dari plugin Java.
@@ -383,8 +400,12 @@ every 1 second:
                 if {_claimed} is true:
                     send "&d[Yui] Perhatikan kondisi fisikmu, Yui khawatir sekali" to loop-player
                     set {-voice::playing::%loop-player's uuid%} to "{@sound_followup}"
-                    play sound "{@sound_followup}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
-                    play sound "entity.experience_orb.pickup" to loop-player
+                    # Suara keluar dari badan Yui, bukan dari owner. Kalau Yui sudah tidak ada,
+                    # suaranya tidak diputar sama sekali.
+                    if duovoice_companion_found(loop-player, "yui") is true:
+                        set {_loc} to duovoice_sound_location(loop-player, "yui")
+                        play sound "{@sound_followup}" in voice category with volume {@sound_volume} and pitch 1 at {_loc} to loop-player
+                        play sound "entity.experience_orb.pickup" at {_loc} to loop-player
 
 every {@heal_interval}:
     loop all players:
@@ -409,7 +430,8 @@ every {@heal_interval}:
                             set {-voice::playing::%loop-player's uuid%} to "{@sound_heal}"
                         send action bar "&dSayang kamu terluka, biar Yui merawatmu...." to loop-player
                         send "&d[Yui] Arif.....mundur, biar Yui merawatmu" to loop-player
-                        play sound "{@sound_heal}" in voice category with volume {@sound_volume} and pitch 1 to loop-player
+                        if duovoice_companion_found(loop-player, "yui") is true:
+                            play sound "{@sound_heal}" in voice category with volume {@sound_volume} and pitch 1 at duovoice_sound_location(loop-player, "yui") to loop-player
                     set {_follow} to {_full}
                     if {-yuifollow::%loop-player's uuid%} is greater than or equal to {@followup_every}:
                         set {_follow} to true

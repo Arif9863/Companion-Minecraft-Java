@@ -40,6 +40,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private int idleLookStandstillDistance;
     private int packHttpPort;
     private double attackSearchRadius;
+    private double waitThreatRadius;
     private double attackDamage;
     private long attackCooldownTicks;
     private double yuiSkeletonMarkRadius;
@@ -112,6 +113,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        // Bring the config on disk up to date first, then read it: a value that was just added
+        // to the file by hand is picked up in the same startup.
+        updateConfigFile();
+        reloadConfig();
         readConfig();
         manager = new CompanionManager(this);
 
@@ -119,8 +124,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("sandrone-npc", new CompanionCommand("sandrone"));
         registerCommand("kesini", new ModeCommand(CompanionManager.FollowMode.CLOSE, "Kesini"));
         registerCommand("ikut", new ModeCommand(CompanionManager.FollowMode.FOLLOW, "Ikut"));
-        registerCommand("serang", new AttackCommand(true));
-        registerCommand("tahan", new AttackCommand(false));
+        registerCommand("tunggu", new WaitCommand());
         registerCommand("companionnpc", new AdminCommand());
         registerCommand("eris", new ErisCommand());
         listener = new CompanionListener(this);
@@ -131,7 +135,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
         startPackServer();
 
-        getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /serang, /tahan, /companionnpc");
+        getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /tunggu, /companionnpc");
         if (getConfig().getBoolean("debug-self-test", false)) {
             runSelfTest();
         }
@@ -248,8 +252,12 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         idleLookStandstillDistance = Math.max(2, Math.min(12, requestedIdleDist));
         // Pack HTTP server port (LAN file serving).
         packHttpPort = config.getInt("pack-http-port", 8765);
-        // How far a hostile mob may be from the owner before a companion defends them.
+        // How far a hostile mob may be from a companion before it defends itself and its owner.
         attackSearchRadius = Math.max(2.0, Math.min(16.0, config.getDouble("attack-search-radius", 8.0)));
+        // How far a waiting companion reacts to hostile mobs around the spot it was told to
+        // wait at. Detection and fighting range in one: a mob inside it is fought, one further
+        // out is left alone, and the companion holds its post.
+        waitThreatRadius = Math.max(4.0, Math.min(48.0, config.getDouble("wait-threat-radius", 12.0)));
         // Damage per melee swing.
         attackDamage = Math.max(1.0, Math.min(40.0, config.getDouble("attack-damage", 5.0)));
         // Ticks between two swings (20 ticks = one second).
@@ -257,6 +265,34 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         // Companion-specific defensive markers (10-24 blocks, default 16).
         yuiSkeletonMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("yui-skeleton-mark-radius", 16.0)));
         sandroneCreeperMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("sandrone-creeper-mark-radius", 16.0)));
+    }
+
+    /**
+     * Brings the {@code config.yml} on disk up to date with the options this plugin version
+     * knows about.
+     *
+     * <p>Bukkit only writes the bundled config when there is none yet, so a config created by an
+     * older version keeps its old shape and never gains the new options. Adding the missing ones
+     * — without touching the values that are already set — is what lets the owner discover and
+     * change them.</p>
+     */
+    private void updateConfigFile() {
+        try {
+            File file = getDataFolder().toPath().resolve("config.yml").toFile();
+            org.bukkit.configuration.file.YamlConfiguration defaults =
+                    new org.bukkit.configuration.file.YamlConfiguration();
+            try (java.io.InputStream stream = getResource("config.yml")) {
+                if (stream == null) {
+                    return;
+                }
+                defaults.loadFromString(new String(stream.readAllBytes(),
+                        java.nio.charset.StandardCharsets.UTF_8));
+            }
+            String report = ConfigUpdater.merge(file, defaults);
+            getLogger().info("Config: " + report);
+        } catch (Exception ex) {
+            getLogger().warning("Could not update config.yml: " + ex.getMessage());
+        }
     }
 
     @Override
@@ -325,6 +361,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     /** How far an owner-threatening hostile may be for a companion to defend against. */
     double attackSearchRadius() {
         return attackSearchRadius;
+    }
+
+    /** How far a waiting companion reacts to hostile mobs around the spot it was told to wait at. */
+    double waitThreatRadius() {
+        return waitThreatRadius;
     }
 
     /** Damage a companion's swing deals to a hostile mob. */
@@ -545,16 +586,13 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     }
 
     /**
-     * The {@code /serang} and {@code /tahan} pair: an independent toggle for melee combat that
-     * can be combined with either follow mode, so a companion can stay close and still fight.
+     * The {@code /tunggu} command: the companion stops following the owner and waits where it is.
+     *
+     * <p>It keeps watching the owner from where it stands, wanders a few blocks around its own
+     * spot, and is never caught up by teleport — being far from the owner is exactly what was
+     * asked for.</p>
      */
-    private final class AttackCommand implements CommandExecutor, TabCompleter {
-        private final boolean enabled;
-
-        private AttackCommand(boolean enabled) {
-            this.enabled = enabled;
-        }
-
+    private final class WaitCommand implements CommandExecutor, TabCompleter {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String commandLabel, String[] args) {
             if (!(sender instanceof Player player)) {
@@ -564,8 +602,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             String target = args.length == 0 ? "semua" : args[0].toLowerCase(Locale.ROOT);
             if (!target.equals("yui") && !target.equals("sandrone") && !target.equals("semua")) {
                 if (target.equals("eris")) {
-                    player.sendMessage(Component.text("Eris punya command sendiri: /eris serang"
-                            + " atau /eris tahan", NamedTextColor.YELLOW));
+                    player.sendMessage(Component.text("Eris punya command sendiri: /eris tunggu",
+                            NamedTextColor.YELLOW));
                     return true;
                 }
                 player.sendMessage(Component.text("Pilih siapa: /" + commandLabel
@@ -577,16 +615,13 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                         NamedTextColor.RED));
                 return true;
             }
-            int changed = manager.setAttacking(player, target, enabled);
+            int changed = manager.callWait(player, target);
             if (changed == 0) {
                 player.sendMessage(Component.text("Tidak ada pendamping yang bisa diubah."
                         + " Panggil dengan /yui-npc atau /sandrone-npc dulu.", NamedTextColor.YELLOW));
-            } else if (enabled) {
-                player.sendMessage(Component.text("Siap bertarung untuk " + target
-                        + ". Mereka menyerang mob yang menyerangmu.", NamedTextColor.GREEN));
             } else {
-                player.sendMessage(Component.text("Tidak bertarung untuk " + target
-                        + ". Pedang disingkirkan.", NamedTextColor.GREEN));
+                player.sendMessage(Component.text("Tunggu di tempat untuk " + target
+                        + ". Mereka menunggu di tempat.", NamedTextColor.GREEN));
             }
             return true;
         }
@@ -612,7 +647,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
      */
     private final class ErisCommand implements CommandExecutor, TabCompleter {
         private static final List<String> SUBCOMMANDS =
-                List.of("ikut", "kesini", "serang", "tahan", "off");
+                List.of("ikut", "kesini", "tunggu", "off");
 
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -652,10 +687,9 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 }
                 case "ikut" -> applyErisMode(player, CompanionManager.FollowMode.FOLLOW, "Ikut");
                 case "kesini" -> applyErisMode(player, CompanionManager.FollowMode.CLOSE, "Kesini");
-                case "serang" -> applyErisCombat(player, true);
-                case "tahan" -> applyErisCombat(player, false);
+                case "tunggu" -> applyErisWait(player);
                 default -> player.sendMessage(Component.text(
-                        "Usage: /" + label + " [ikut|kesini|serang|tahan|off]", NamedTextColor.YELLOW));
+                        "Usage: /" + label + " [ikut|kesini|tunggu|off]", NamedTextColor.YELLOW));
             }
             return true;
         }
@@ -672,16 +706,15 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             player.sendMessage(Component.text("Mode " + name + " aktif untuk Eris.", NamedTextColor.GREEN));
         }
 
-        private void applyErisCombat(Player player, boolean enabled) {
-            int changed = manager.setAttacking(player, "eris", enabled);
+        private void applyErisWait(Player player) {
+            int changed = manager.callWait(player, "eris");
             if (changed == 0) {
                 player.sendMessage(Component.text("Eris belum dipanggil. Gunakan /eris dulu.",
                         NamedTextColor.YELLOW));
                 return;
             }
-            player.sendMessage(enabled
-                    ? Component.text("Eris siap bertarung untuk Ferdi-Kun.", NamedTextColor.GREEN)
-                    : Component.text("Eris menyimpan pedangnya.", NamedTextColor.GREEN));
+            player.sendMessage(Component.text("Eris menunggu di tempat.",
+                    NamedTextColor.GREEN));
         }
 
         @Override
@@ -700,7 +733,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
             if (args.length == 0) {
-                sender.sendMessage(Component.text("Usage: /" + label + " <clear|reload>", NamedTextColor.YELLOW));
+                sender.sendMessage(Component.text("Usage: /" + label + " <clear|reload|config>",
+                        NamedTextColor.YELLOW));
                 return true;
             }
             switch (args[0].toLowerCase(Locale.ROOT)) {
@@ -714,7 +748,17 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                     refreshCompanionUserTags();
                     sender.sendMessage(Component.text("Companion NPC config reloaded.", NamedTextColor.GREEN));
                 }
-                default -> sender.sendMessage(Component.text("Usage: /" + label + " <clear|reload>", NamedTextColor.YELLOW));
+                case "config" -> {
+                    // Adds the options this plugin version knows about to the file on disk,
+                    // without touching the ones that are already set.
+                    reloadConfig();
+                    readConfig();
+                    updateConfigFile();
+                    sender.sendMessage(Component.text("Config file updated. Restart or reload to apply.",
+                            NamedTextColor.GREEN));
+                }
+                default -> sender.sendMessage(Component.text(
+                        "Usage: /" + label + " <clear|reload|config>", NamedTextColor.YELLOW));
             }
             return true;
         }
@@ -722,7 +766,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         @Override
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
-                List<String> options = new ArrayList<>(List.of("clear", "reload"));
+                List<String> options = new ArrayList<>(List.of("clear", "reload", "config"));
                 String prefix = args[0].toLowerCase(Locale.ROOT);
                 options.removeIf(option -> !option.startsWith(prefix));
                 return options;

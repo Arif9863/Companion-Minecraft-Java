@@ -121,17 +121,25 @@ public final class CompanionManager {
             "Hmph. Jangan panggil-panggil aku! Aku cuma ikut Ferdi-Kun—bukan milikmu!";
 
     /**
-     * The two standing behaviours a companion can have.
+     * The standing behaviours a companion can have.
      *
      * <p>A mode stays in force until another command replaces it — there is no timeout. The
-     * formation is therefore not a permanent behaviour but one of two choices, which is what
+     * formation is therefore not a permanent behaviour but one of several choices, which is what
      * makes both a cramped room and open exploration work without a separate plugin.</p>
      */
     public enum FollowMode {
         /** Keeps the formation and a comfortable distance — good for exploring outdoors. */
         FOLLOW,
         /** Stays as close as the geometry allows — good for small rooms. */
-        CLOSE
+        CLOSE,
+        /**
+         * Waits where it was told to stay instead of following the owner.
+         *
+         * <p>The companion stops chasing the owner and wanders around the spot it was given, but
+         * it keeps watching the owner from there. No emergency teleport happens in this mode:
+         * the companion is where it was asked to be, so being far away is not a problem.</p>
+         */
+        WAIT
     }
 
     /** A* and movement budget: never exceed a small per-tick planning window. */
@@ -395,6 +403,56 @@ public final class CompanionManager {
     /** Maximum height offset for particles above a marked hostile. */
     private static final double MARKER_PARTICLE_HEIGHT = 1.2;
 
+    /**
+     * How far a waiting companion may wander from the spot it was told to stay.
+     *
+     * <p>5 blocks: enough for the companion to look alive — walking around, turning, coming back —
+     * without wandering off into another room and losing the player.</p>
+     */
+    private static final double WAIT_WANDER_RADIUS = 5.0;
+
+    /**
+     * How far the companion may stray beyond the wander radius before it is pulled back.
+     *
+     * <p>A little slack on top of the radius, so a companion that overshoots a step does not get
+     * yanked back mid-stride.</p>
+     */
+    private static final double WAIT_WANDER_SLACK = 1.5;
+
+    /**
+     * Ticks a waiting companion walks in one direction before it may pick a new one.
+     *
+     * <p>40 ticks (2 seconds) is short enough that the wander looks unhurried rather than like
+     * the companion is walking in a straight line to a destination.</p>
+     */
+    private static final long WAIT_DIRECTION_MIN_TICKS = 40L;
+
+    /** Ticks a waiting companion may walk in one direction before it has to turn. */
+    private static final long WAIT_DIRECTION_MAX_TICKS = 110L;
+
+    /**
+     * Ticks a waiting companion stands still before it starts walking again.
+     *
+     * <p>Resting in between is what makes it read as a companion idling rather than a companion
+     * pacing.</p>
+     */
+    private static final long WAIT_REST_MIN_TICKS = 40L;
+
+    /** Upper bound for the idle pause between strolls. */
+    private static final long WAIT_REST_MAX_TICKS = 130L;
+
+    /** Walking speed of a waiting companion while it strolls, in blocks per tick. */
+    private static final double WAIT_WANDER_SPEED = 0.12;
+
+    /**
+     * Hostile mobs that are really neutral: they only strike when provoked.
+     *
+     * <p>They count as a threat only once they actually come for the owner or a companion. A
+     * waiting companion does not pick a fight with one that merely strolls past its post: an
+     * Enderman that is hit teleports away and may well come back for the owner instead.</p>
+     */
+    private static final Set<EntityType> NEUTRAL_HOSTILE_MOBS = Set.of(EntityType.ENDERMAN);
+
     private static final class FollowState {
         private List<org.bukkit.util.Vector> path = List.of();
         private int waypointIndex;
@@ -420,6 +478,9 @@ public final class CompanionManager {
         private long nextGazeCheckTick;
         /** Yaw the companion last walked with, reused while idle instead of the owner's yaw. */
         private float lastWalkingYaw;
+        /** Chunk coordinates of the chunk this companion currently holds a ticket for. */
+        private int heldChunkX = Integer.MIN_VALUE;
+        private int heldChunkZ = Integer.MIN_VALUE;
         /** Sideways nudges already tried for the current jam. */
         private int sideStepAttempts;
         /** Tick at which a danger marker was last sent, to avoid chat spam. */
@@ -428,8 +489,6 @@ public final class CompanionManager {
         private final Set<UUID> markedHostiles = new HashSet<>();
         /** The standing behaviour of this companion: follow in formation, or stay close. */
         private FollowMode mode = FollowMode.FOLLOW;
-        /** Whether this companion is allowed to attack hostile mobs near the owner. */
-        private boolean attackEnabled;
         /** The mob this companion is currently engaging, or null when none. */
         private UUID attackTarget;
         /** Tick at which the current attack target was picked, used for the grace period. */
@@ -470,6 +529,16 @@ public final class CompanionManager {
         private Location closeTarget;
         /** Tick at which the close target was last recomputed. */
         private long closeTargetTick = Long.MIN_VALUE;
+        /** The spot this companion was told to wait at, in WAIT mode. */
+        private Location waitSpot;
+        /** The direction the companion is currently strolling towards. */
+        private Location waitWanderTarget;
+        /** Tick at which the current stroll direction was picked. */
+        private long waitSpotPickedTick = Long.MIN_VALUE;
+        /** Tick at which the companion may next choose a new direction. */
+        private long waitNextTurnTick = Long.MIN_VALUE;
+        /** Whether the companion is currently resting between strolls. */
+        private boolean waitSpotPaused;
         /** The archetype this companion belongs to — Yui or Sandrone. */
         private String archetype;
         /** Stable formation facing, updated from the owner's movement direction, never camera look. */
@@ -896,6 +965,57 @@ public final class CompanionManager {
     }
 
     /**
+     * Adds a plugin chunk ticket to the companion's chunk, so the chunk stays loaded while the
+     * companion waits there.
+     */
+    private void holdChunk(Entity companion, FollowState state) {
+        Location location = companion.getLocation();
+        int chunkX = location.getBlockX() >> 4;
+        int chunkZ = location.getBlockZ() >> 4;
+        try {
+            companion.getWorld().getChunkAt(location).addPluginChunkTicket(plugin);
+            state.heldChunkX = chunkX;
+            state.heldChunkZ = chunkZ;
+        } catch (RuntimeException ex) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Could not keep the companion's chunk loaded", ex);
+        }
+    }
+
+    /**
+     * Releases the plugin chunk ticket the companion was holding.
+     */
+    private void releaseChunk(Entity companion, FollowState state) {
+        if (state.heldChunkX == Integer.MIN_VALUE) {
+            return;
+        }
+        state.heldChunkX = Integer.MIN_VALUE;
+        state.heldChunkZ = Integer.MIN_VALUE;
+        try {
+            companion.getWorld().getChunkAt(companion.getLocation())
+                    .removePluginChunkTicket(plugin);
+        } catch (RuntimeException ignored) {
+            // The chunk may already be gone; there is no ticket left to release either way.
+        }
+    }
+
+    /**
+     * Moves the chunk ticket along with the companion when it walks into another chunk.
+     *
+     * <p>Only one chunk is held at a time: the old one is released and the new one is claimed,
+     * so a companion that walks around does not pin every chunk it passes through.</p>
+     */
+    private void moveChunkTicket(Entity companion, FollowState state) {
+        int chunkX = companion.getLocation().getBlockX() >> 4;
+        int chunkZ = companion.getLocation().getBlockZ() >> 4;
+        if (chunkX == state.heldChunkX && chunkZ == state.heldChunkZ) {
+            return;
+        }
+        releaseChunk(companion, state);
+        holdChunk(companion, state);
+    }
+
+    /**
      * The scoreboard tag marking that a player currently has this companion on the world.
      *
      * @param archetype "yui", "sandrone", or "eris"
@@ -913,6 +1033,11 @@ public final class CompanionManager {
                 mannequin.setGravity(true);
                 mannequin.setInvulnerable(true);
                 mannequin.setSilent(true);
+                // The companion is not written to the chunk data. A companion that was left
+                // behind must not outlive the plugin: after a crash it would sit in the chunk
+                // data, unowned and impossible to command. Its chunk is kept loaded by a plugin
+                // chunk ticket instead, so the companion stays alive while the server runs and
+                // is gone cleanly when the plugin shuts down.
                 mannequin.setPersistent(false);
                 mannequin.setRemoveWhenFarAway(false);
                 mannequin.addScoreboardTag(TAG);
@@ -1240,30 +1365,63 @@ public final class CompanionManager {
      *
      * <p>Only hostile mobs that are actually a threat qualify: either they are already coming for
      * the owner, or they are already coming for this companion. A mob that is merely standing
-     * nearby is ignored, so the companion does not go on the offensive. The search radius is
-     * configurable (8 blocks by default), so the owner is never left undefended for a distant fight.</p>
+     * nearby is ignored, so the companion does not go on the offensive.</p>
+     *
+     * <p>The search is centred on the companion itself, never on the owner. A companion that was
+     * told to wait defends its own surroundings: it does not leave the spot to rescue the owner,
+     * which is what would otherwise drag it away and leave it standing where the last mob died.</p>
+     *
+     * <p>A waiting companion has a wider leash than a following one: it may step out to deal with
+     * a hostile that comes inside the ground it holds, but it is never pulled towards the owner.
+     * The leash is measured from the spot it was told to wait at, so the fight stays around that
+     * spot instead of wandering off with the mob.</p>
+     *
+     * <p>The search radius is configurable (8 blocks by default), so the owner is never left
+     * undefended for a distant fight.</p>
      *
      * @return the mob to engage, or null when there is nothing to fight
      */
     private LivingEntity findAttackTarget(Mannequin npc, Player owner, FollowState state) {
-        Location ownerLocation = owner.getLocation();
+        Location npcLocation = npc.getLocation();
         double radius = plugin.attackSearchRadius();
+        // A waiting companion watches a wider circle around its own spot, so a mob that walks
+        // towards the spot is noticed before it arrives. The detection range is separate from
+        // the idle wander radius: noticing a threat further out does not make the companion
+        // wander further from its spot.
+        if (state.mode == FollowMode.WAIT && state.waitSpot != null) {
+            radius = plugin.waitThreatRadius() + WAIT_WANDER_RADIUS;
+        }
         double radiusSquared = radius * radius;
+
         LivingEntity best = null;
         double bestDistance = radiusSquared;
 
-        for (Entity entity : owner.getNearbyEntities(radius, radius, radius)) {
+        for (Entity entity : npc.getNearbyEntities(radius, radius, radius)) {
             if (!(entity instanceof LivingEntity living) || !isHostileMob(living)) {
                 continue;
             }
             if (!living.isValid() || living.isDead()) {
                 continue;
             }
-            // A mob that is already coming for the owner or for this companion is a threat.
-            if (!isThreatToParty(living, owner, npc)) {
+            // A mob that is actually coming for the owner or for a companion is a threat, in
+            // every mode. This stays a requirement: it is what keeps the companion from
+            // picking a fight with a mob that is merely walking past.
+            boolean threatToParty = isThreatToParty(living, owner, npc);
+            // In WAIT the companion also holds its ground: a hostile that walks into the
+            // watched circle is a threat to the post, even if it has not picked a target yet.
+            // Neutral hostiles are excluded from this, though — an Enderman that strolls past
+            // is left alone, because it only strikes when provoked and it can turn on the owner.
+            boolean territorial = false;
+            if (state.mode == FollowMode.WAIT && state.waitSpot != null
+                    && !NEUTRAL_HOSTILE_MOBS.contains(living.getType())) {
+                double detectRadius = plugin.waitThreatRadius();
+                territorial = living.getLocation().distanceSquared(state.waitSpot)
+                        <= detectRadius * detectRadius;
+            }
+            if (!threatToParty && !territorial) {
                 continue;
             }
-            double distance = living.getLocation().distanceSquared(ownerLocation);
+            double distance = living.getLocation().distanceSquared(npcLocation);
             if (distance < bestDistance) {
                 bestDistance = distance;
                 best = living;
@@ -1315,14 +1473,15 @@ public final class CompanionManager {
     /**
      * Updates this companion's defensive marker set and emits particles/chat for new threats.
      *
-     * <p>Yui marks skeletons, Sandrone marks creepers. This only runs while /serang is enabled;
-     * it doesn't affect follow/close mode and doesn't apply the glowing effect that is visible
-     * through walls. Particles are spawned above each marked hostile and therefore only appear
-     * when there is a line of sight.</p>
+     * <p>Yui marks skeletons, Sandrone marks creepers. Particles are spawned above each marked
+     * hostile and therefore only appear when there is a line of sight.</p>
+     *
+     * <p>The search is centred on the companion, so a waiting companion only marks the threats
+     * around the ground it is holding — not the ones besieging its owner somewhere else.</p>
      */
     private void updateDangerMarkers(Mannequin npc, Player owner, FollowState state,
                                     long currentTick) {
-        if (!state.attackEnabled || !owner.isOnline()) {
+        if (!owner.isOnline()) {
             clearDangerMarkers(state);
             return;
         }
@@ -1341,8 +1500,9 @@ public final class CompanionManager {
         EntityType wantedType = "yui".equalsIgnoreCase(state.archetype)
                 ? EntityType.SKELETON : EntityType.CREEPER;
         Set<UUID> foundNow = new java.util.HashSet<>();
+        Location centre = npc.getLocation();
 
-        for (Entity entity : owner.getNearbyEntities(radius, radius, radius)) {
+        for (Entity entity : npc.getNearbyEntities(radius, radius, radius)) {
             if (!(entity instanceof LivingEntity hostile)
                     || hostile.getType() != wantedType
                     || !hostile.isValid() || hostile.isDead()) {
@@ -1351,7 +1511,7 @@ public final class CompanionManager {
             if (!isThreatToParty(hostile, owner, npc)) {
                 continue;
             }
-            if (hostile.getLocation().distanceSquared(owner.getLocation()) > radiusSquared) {
+            if (hostile.getLocation().distanceSquared(centre) > radiusSquared) {
                 continue;
             }
             UUID hostileId = hostile.getUniqueId();
@@ -1458,6 +1618,33 @@ public final class CompanionManager {
     }
 
     /**
+     * Releases a mob that was coming for a companion, so it looks for the owner again.
+     *
+     * <p>A mannequin is immortal, so a mob that fixed its target on the companion would keep
+     * hitting it forever instead of coming back to the owner it came for.</p>
+     */
+    private static void releaseAggro(LivingEntity target, Player owner) {
+        if (target instanceof org.bukkit.entity.Mob hostile
+                && hostile.getTarget() instanceof Mannequin companion
+                && companion.getScoreboardTags().contains(TAG)) {
+            hostile.setTarget(owner);
+        }
+    }
+
+    /**
+     * Hands a mob hit by a companion's projectile back to the owner.
+     *
+     * <p>Called from the projectile listener: the projectile was fired by the owner, so the mob
+     * should answer to him rather than to the immortal companion that threw it.</p>
+     */
+    public void releaseProjectileAggro(LivingEntity hit, org.bukkit.entity.Projectile projectile) {
+        org.bukkit.projectiles.ProjectileSource shooter = projectile.getShooter();
+        if (shooter instanceof Player owner) {
+            releaseAggro(hit, owner);
+        }
+    }
+
+    /**
      * Swings at the target: the companion's arm animates like a player's, and the mob takes the
      * damage. A mob that had the companion as its target is released first, so it stops hitting
      * an immortal companion and looks for the owner again.
@@ -1477,11 +1664,7 @@ public final class CompanionManager {
         npc.swingMainHand();
         // Take the mob's attention off the companion: an immortal target would otherwise keep
         // the mob busy forever instead of letting it return to the owner.
-        if (target instanceof org.bukkit.entity.Mob hostile
-                && hostile.getTarget() instanceof Mannequin companion
-                && companion.getScoreboardTags().contains(TAG)) {
-            hostile.setTarget(owner);
-        }
+        releaseAggro(target, owner);
         target.damage(plugin.attackDamage(), npc);
     }
 
@@ -1562,15 +1745,25 @@ public final class CompanionManager {
         FollowMode saved = savedModes.get(key);
         state.mode = saved == null ? FollowMode.FOLLOW : saved;
         followStates.put(key, state);
+        // Keep the companion's chunk loaded for as long as it exists. Without this the chunk is
+        // unloaded as soon as the owner walks away, and the companion is dropped from the world
+        // with it: the owner can no longer command it and it never comes back.
+        holdChunk(npc, state);
         BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             if (!owner.isOnline() || npc.isDead() || !npc.isValid()) {
                 cancel(key);
                 return;
             }
             if (!npc.getWorld().equals(owner.getWorld())) {
-                rescueTeleport(npc, owner, owner.getLocation(), state);
+                // A waiting companion stays where it was left, even in another world: pulling it
+                // back to the owner would undo the whole point of the command.
+                if (state.mode != FollowMode.WAIT) {
+                    rescueTeleport(npc, owner, owner.getLocation(), state);
+                }
                 return;
             }
+            // A companion that walked into another chunk needs its ticket moved along with it.
+            moveChunkTicket(npc, state);
 
             Location npcLocation = npc.getLocation();
             Location ownerLocation = owner.getLocation();
@@ -1597,25 +1790,50 @@ public final class CompanionManager {
             // The mode is persistent until another command replaces it. Its standing distance is
             // the only difference here; the selected target handles formation vs. close positioning.
             boolean closeMode = state.mode == FollowMode.CLOSE;
+            boolean waitMode = state.mode == FollowMode.WAIT;
             double standStill = closeMode
                     ? plugin.closeDistance()
                     : plugin.comfortDistance();
 
             // The companion heads for its own spot in the formation, not for the owner directly.
             // In CLOSE mode formationSpot picks a point within the owner's reachable room.
-            Location targetSpot = formationSpot(npc, owner, state, closeMode);
             long currentTick = Bukkit.getCurrentTick();
+
+            // Waiting: the companion stays where it was told to wait and only wanders a little
+            // around that spot. It never aims for the owner, so the owner's own position does not
+            // matter here at all — and the formation spot is not even computed, because that
+            // would only churn the route state for a target nobody is heading to.
+            Location targetSpot = waitMode
+                    ? waitSpot(npc, state, currentTick)
+                    : formationSpot(npc, owner, state, closeMode);
 
             // Combat overrides the formation while it is active: the companion walks to the mob
             // instead of holding its side, and looks at what it is fighting.
-            LivingEntity attackTarget = null;
-            if (state.attackEnabled) {
-                attackTarget = resolveAttackTarget(npc, owner, state, currentTick);
-                if (attackTarget != null) {
-                    targetSpot = meleeSpot(npc, attackTarget);
+            //
+            // Defending is automatic: there is no toggle any more. A companion always reacts to
+            // a hostile mob that is coming for its owner or for the companion itself. The search
+            // is centred on the companion, so a waiting companion defends the ground it was told
+            // to hold and never leaves to chase the owner across the map.
+            LivingEntity attackTarget = resolveAttackTarget(npc, owner, state, currentTick);
+            if (attackTarget != null) {
+                targetSpot = meleeSpot(npc, attackTarget);
+            }
+            // A waiting companion is on a leash: it fights what comes inside the ground it holds,
+            // but it does not follow a mob out of that ground. Once the mob pulls it too far from
+            // its spot, the companion drops the fight and walks back to where it was told to wait.
+            if (attackTarget != null && waitMode && state.waitSpot != null) {
+                double leash = plugin.waitThreatRadius();
+                if (npcLocation.distanceSquared(state.waitSpot) > leash * leash) {
+                    attackTarget = null;
+                    state.attackTarget = null;
+                    state.attackTargetTick = Long.MIN_VALUE;
+                    targetSpot = waitSpot(npc, state, currentTick);
                 }
             }
-            // Defensive markers only exist while combat mode is on.
+            // The sword is only drawn while there is something to fight, and put away again once
+            // the fight is over.
+            updateSword(npc, attackTarget != null);
+            // Defensive markers show which hostile mobs are being watched.
             updateDangerMarkers(npc, owner, state, currentTick);
             // Eris is a support fighter: while she is fighting next to her owner she keeps
             // refreshing Speed on them, and she talks in her own voice.
@@ -1643,8 +1861,10 @@ public final class CompanionManager {
             // owner can be directly above it while it lies at the bottom of a ravine, so their
             // straight-line distance stays small. A companion that is still rising — falling is
             // over and it swims upward — is left alone, so a swim towards the owner is not
-            // interrupted.
-            if (ownerLocation.getY() - npcLocation.getY() >= EMERGENCY_FALL_DISTANCE
+            // interrupted. A waiting companion is not rescued either: it was told to stay where
+            // it is, so being far from the owner is exactly what was asked for.
+            if (!waitMode
+                    && ownerLocation.getY() - npcLocation.getY() >= EMERGENCY_FALL_DISTANCE
                     && npc.getVelocity().getY() <= 0.01) {
                 rescueTeleport(npc, owner, ownerLocation, state);
                 return;
@@ -1652,8 +1872,9 @@ public final class CompanionManager {
 
             // Emergency teleport. The threshold and the landing spot are mode-specific:
             // FOLLOW catches up to the companion's own formation side, CLOSE lands in the
-            // owner's reachable room. Both use their own configured distance.
-            if (distance > emergencyTeleportDistance(state.mode)) {
+            // owner's reachable room. Both use their own configured distance. A waiting
+            // companion never needs catching up, so it is left alone entirely.
+            if (!waitMode && distance > emergencyTeleportDistance(state.mode)) {
                 rescueTeleport(npc, owner, ownerLocation, state);
                 return;
             }
@@ -1684,11 +1905,17 @@ public final class CompanionManager {
                         targetPosition.getZ(), io.papermc.paper.entity.LookAnchor.EYES);
             }
 
-            if (attackTarget == null ? targetDistance <= standStill
-                    : combatDistance <= arriveAt) {
+            // A waiting companion never "arrives": it is not heading for the owner, so the
+            // owner's distance says nothing about whether it should keep walking. Only a
+            // fighting companion stops when it reaches its target.
+            boolean arrived = attackTarget == null
+                    ? !waitMode && targetDistance <= standStill
+                    : combatDistance <= arriveAt;
+            if (arrived) {
                 org.bukkit.util.Vector velocity = npc.getVelocity();
                 npc.setVelocity(new org.bukkit.util.Vector(velocity.getX() * 0.35, velocity.getY(), velocity.getZ() * 0.35));
                 if (attackTarget == null) {
+                    // A waiting companion keeps watching its owner even though it stays put.
                     applyGaze(npc, owner, state, state.lastWalkingYaw, true, true);
                 } else if (inReach) {
                     // Standing its ground within reach: this is where the swing happens.
@@ -1740,10 +1967,13 @@ public final class CompanionManager {
                 // owner stayed above). Let it retry briefly to account for a transient path update,
                 // then use the mode's safe landing target rather than waiting until the owner is
                 // more than 24 blocks away. Do not rescue a companion that is currently swimming.
+                // A waiting companion is never rescued: it was told to stay where it is, so
+                // pulling it back to the owner would defeat the command.
                 if (state.noPathSinceTick == Long.MIN_VALUE) {
                     state.noPathSinceTick = currentTick;
                 }
-                if (!npc.isInWater() && currentTick - state.noPathSinceTick >= NO_PATH_RESCUE_TICKS) {
+                if (!waitMode && !npc.isInWater()
+                        && currentTick - state.noPathSinceTick >= NO_PATH_RESCUE_TICKS) {
                     rescueTeleport(npc, owner, ownerLocation, state);
                     return;
                 }
@@ -1821,6 +2051,9 @@ public final class CompanionManager {
             if (attackTarget != null) {
                 // Sprint into melee range 1.5x faster, but only while actually chasing a hostile.
                 speed *= 1.5;
+            } else if (waitMode) {
+                // A waiting companion strolls rather than hurries; it is not going anywhere.
+                speed = Math.min(speed, WAIT_WANDER_SPEED);
             }
             double vx = (wx / waypointDistance) * speed;
             double velocityZ = (wz / waypointDistance) * speed;
@@ -2205,15 +2438,11 @@ public final class CompanionManager {
     /**
      * Points the companion's head at whatever deserves its attention.
      *
-     * <p>One function for both cases:</p>
-     * <ul>
-     *   <li><b>standing still</b> (by the owner): the head follows the owner, and briefly turns
-     *       toward a nearby mob from time to time;</li>
-     *   <li><b>walking</b>: the body keeps its walking yaw and the head keeps facing where the body
-     *       walks, except when a glance at a mob is already underway or a new one is scheduled —
-     *       and only if that mob stays within {@link #MAX_GLANCE_ANGLE_DEGREES} of the walking
-     *       direction, so the head never twists past the neck's reach.</li>
-     * </ul>
+     * <p>When idle in FOLLOW/CLOSE mode, the head rests toward the owner and occasionally turns
+     * toward a nearby living entity. In WAIT mode it rests facing the direction it is standing
+     * toward, so it does not keep staring at the owner. While walking, the body keeps its walking
+     * yaw and the head keeps facing where the body walks, except when a glance at a nearby entity
+     * is underway and stays within {@link #MAX_GLANCE_ANGLE_DEGREES} of the walking direction.</p>
      *
      * <p>Call order inside is deliberate: {@code setBodyYaw} first, {@code lookAt} last — swapping
      * them reverts the gaze every tick, which is the very bug an earlier revision fixed.</p>
@@ -2233,9 +2462,9 @@ public final class CompanionManager {
 
         // Consider a new mob to glance at when idle and no gaze is running.
         if (state.gazeTarget == null && currentTick >= state.nextGazeCheckTick) {
-            Entity mob = nearestWatchableMob(npc, owner);
-            if (mob != null && withinGlanceAngle(npc, mob, bodyYaw)) {
-                state.gazeTarget = mob.getUniqueId();
+            Entity nearby = nearestWatchableEntity(npc, owner);
+            if (nearby != null && withinGlanceAngle(npc, nearby, bodyYaw)) {
+                state.gazeTarget = nearby.getUniqueId();
                 state.gazeEndTick = currentTick + GLANCE_DURATION_TICKS
                         + (long) (Math.random() * GLANCE_DURATION_VARIANCE_TICKS);
             } else {
@@ -2256,10 +2485,18 @@ public final class CompanionManager {
         } else {
             state.gazeTarget = null;
             if (standing) {
-                // Standing by the owner: look at the owner (the normal resting gaze).
-                targetX = owner.getLocation().getX();
-                targetY = owner.getLocation().getY() + owner.getEyeHeight();
-                targetZ = owner.getLocation().getZ();
+                if (state.mode == FollowMode.WAIT) {
+                    // Waiting is not the same as standing beside the owner: do not stare at the
+                    // owner. Let the idle gaze rest on the direction the companion faces instead.
+                    targetX = npc.getLocation().getX() - Math.sin(Math.toRadians(bodyYaw));
+                    targetY = npc.getEyeLocation().getY();
+                    targetZ = npc.getLocation().getZ() + Math.cos(Math.toRadians(bodyYaw));
+                } else {
+                    // Standing by the owner: look at the owner (the normal resting gaze).
+                    targetX = owner.getLocation().getX();
+                    targetY = owner.getLocation().getY() + owner.getEyeHeight();
+                    targetZ = owner.getLocation().getZ();
+                }
             } else {
                 // Walking: no owner-gaze — the head simply stays with the body.
                 npc.setBodyYaw(bodyYaw);
@@ -2301,14 +2538,15 @@ public final class CompanionManager {
     }
 
     /**
-     * Returns the closest living mob worth glancing at, ignoring the owner and the companion itself.
+     * Finds the nearest living entity worth a brief glance at, excluding the owner and self.
      *
-     * <p>Other companions are skipped too: Yui and Sandrone should notice the world around them,
-     * not just each other. Every other living entity — hostile mobs, animals, villagers — counts.</p>
+     * <p>Companions are valid gaze targets too: in WAIT mode Yui and Sandrone can notice each
+     * other rather than looking at the owner or treating their partner as scenery. Dead,
+     * invalid, and self entities are ignored.</p>
      *
      * <p>Scanned only about twice a second rather than every tick, so idle behaviour stays cheap.</p>
      */
-    private Entity nearestWatchableMob(Mannequin npc, Player owner) {
+    private Entity nearestWatchableEntity(Mannequin npc, Player owner) {
         double radius = plugin.idleLookRadius();
         Entity closest = null;
         double closestDistanceSquared = radius * radius;
@@ -2316,14 +2554,8 @@ public final class CompanionManager {
             if (!(entity instanceof org.bukkit.entity.LivingEntity living)) {
                 continue;
             }
-            if (living.getUniqueId().equals(owner.getUniqueId())) {
-                continue;
-            }
-            if (living.getUniqueId().equals(npc.getUniqueId())) {
-                continue;
-            }
-            // Skip the other companion: they are part of the party, not part of the scenery.
-            if (entity.getScoreboardTags().contains(TAG)) {
+            if (living.getUniqueId().equals(owner.getUniqueId())
+                    || living.getUniqueId().equals(npc.getUniqueId())) {
                 continue;
             }
             if (living.isDead() || !living.isValid()) {
@@ -2756,64 +2988,156 @@ public final class CompanionManager {
     }
 
     /**
-     * Turns the companions' melee behaviour on or off.
+     * Picks where a waiting companion strolls next.
      *
-     * <p>This is a separate toggle rather than a third mode, so it can be combined with either
-     * FOLLOW or CLOSE: a companion can stay close to the owner and still fight.</p>
+     * <p>The companion keeps the spot it was told to wait at as its anchor and free-roams around
+     * it the way a mob does: it picks a direction, walks it for a while, then turns or rests
+     * before picking another. It never marches to a fixed destination and stops there. The anchor
+     * is set the first time the mode is used, which is where the companion was standing when the
+     * command was given.</p>
      *
-     * @param archetype "yui", "sandrone", or "semua" for both
-     * @param enabled   true to let the companions fight, false to hold fire
-     * @return how many companions were actually changed
+     * @return the point the companion should head for right now
      */
-    public int setAttacking(Player owner, String archetype, boolean enabled) {
-        int changed = 0;
-        for (Map.Entry<CompanionKey, FollowState> entry : followStates.entrySet()) {
-            CompanionKey key = entry.getKey();
-            if (!key.ownerId().equals(owner.getUniqueId())) {
-                continue;
-            }
-            if (!archetype.equalsIgnoreCase("semua") && !archetype.equalsIgnoreCase(key.archetype())) {
-                continue;
-            }
-            // "semua" means the Yui–Sandrone pair only; Eris has her own commands.
-            if (archetype.equalsIgnoreCase("semua") && !PAIRED_ARCHETYPES.contains(key.archetype())) {
-                continue;
-            }
-            FollowState state = entry.getValue();
-            state.attackEnabled = enabled;
-            if (!enabled) {
-                state.attackTarget = null;
-                state.attackTargetTick = Long.MIN_VALUE;
-                state.lastSwingTick = Long.MIN_VALUE;
-                clearDangerMarkers(state);
-                state.lastMarkerAlertTick = Long.MIN_VALUE;
-                // Drop the sword again and let the companion resume its formation spot.
-                state.path = List.of();
-                state.plannedGoal = null;
-                state.lastPlanTick = Long.MIN_VALUE;
-            }
-            UUID npcId = ownerToNpc.get(key);
-            Entity npc = npcId == null ? null : Bukkit.getEntity(npcId);
-            if (npc instanceof Mannequin mannequin) {
-                setSword(mannequin, enabled);
-            }
-            changed++;
+    private Location waitSpot(Mannequin npc, FollowState state, long currentTick) {
+        Location npcLocation = npc.getLocation();
+        if (state.waitSpot == null) {
+            // The first time the mode is used, the current position becomes the anchor.
+            state.waitSpot = npcLocation.clone();
         }
-        return changed;
+        // A companion that was pulled away from its spot — to fight a mob — heads straight back
+        // there first. Walking back is not a stroll: the stroll only resumes once the companion
+        // is home again.
+        double anchorDx = npcLocation.getX() - state.waitSpot.getX();
+        double anchorDz = npcLocation.getZ() - state.waitSpot.getZ();
+        double anchorDistance = Math.sqrt(anchorDx * anchorDx + anchorDz * anchorDz);
+        if (anchorDistance > WAIT_WANDER_RADIUS) {
+            state.waitWanderTarget = null;
+            state.waitSpotPaused = false;
+            state.waitNextTurnTick = Long.MIN_VALUE;
+            Location home = state.waitSpot.clone();
+            // Aim a little past the anchor so the companion does not hover on the rim of it.
+            return new Location(npc.getWorld(),
+                    home.getX() - anchorDx / anchorDistance * 1.5,
+                    home.getY(),
+                    home.getZ() - anchorDz / anchorDistance * 1.5);
+        }
+        // Resting between strolls: the companion stands still for a moment, the way a mob idles.
+        if (state.waitSpotPaused) {
+            if (currentTick < state.waitNextTurnTick) {
+                return npcLocation.clone();
+            }
+            state.waitSpotPaused = false;
+        }
+        // A stroll that has run its course: pick a new direction.
+        if (state.waitWanderTarget == null || currentTick >= state.waitNextTurnTick) {
+            Location next = pickWanderPoint(npc, state);
+            state.waitWanderTarget = next;
+            long stroll = WAIT_DIRECTION_MIN_TICKS
+                    + (long) (Math.random() * (WAIT_DIRECTION_MAX_TICKS - WAIT_DIRECTION_MIN_TICKS));
+            state.waitNextTurnTick = currentTick + stroll;
+            state.waitSpotPickedTick = currentTick;
+            return next;
+        }
+        // The stroll continues: the target keeps moving away from the companion so it walks on
+        // rather than stopping at a point and standing there.
+        Location target = state.waitWanderTarget.clone();
+        double dx = target.getX() - npcLocation.getX();
+        double dz = target.getZ() - npcLocation.getZ();
+        double length = Math.sqrt(dx * dx + dz * dz);
+        if (length < 0.05) {
+            // The stroll target was reached; extend it further along the same direction.
+            double yaw = Math.toRadians(state.lastWalkingYaw);
+            target = npcLocation.clone().add(
+                    -Math.sin(yaw) * 3.0, 0, Math.cos(yaw) * 3.0);
+            state.waitWanderTarget = target;
+        }
+        return target;
     }
 
     /**
-     * Puts an iron sword in the companion's hand while it is fighting, and takes it away again.
+     * Chooses where the companion strolls next.
      *
-     * <p>The mannequin cannot wield a weapon the way a player does, so the sword is decoration:
-     * it tells other players at a glance that the companion is armed and dangerous.</p>
+     * <p>The companion picks a direction and keeps walking it for a while, the way a mob wanders:
+     * it does not pick a destination and march to it. The direction is chosen from the free space
+     * around the companion, and it is gently pulled back towards the anchor when it strays too
+     * far, so a waiting companion never wanders off and is lost.</p>
+     *
+     * <p>When no such point exists — a cramped corner, a one-block closet — the companion rests
+     * where it is rather than walking into geometry.</p>
      */
-    private static void setSword(Mannequin npc, boolean armed) {
+    private Location pickWanderPoint(Mannequin npc, FollowState state) {
+        Location npcLocation = npc.getLocation();
+        Location anchor = state.waitSpot == null ? npcLocation : state.waitSpot;
+        World world = npc.getWorld();
+
+        // Too far from the anchor: head back instead of wandering further away.
+        double offsetX = npcLocation.getX() - anchor.getX();
+        double offsetZ = npcLocation.getZ() - anchor.getZ();
+        double offsetDistance = Math.sqrt(offsetX * offsetX + offsetZ * offsetZ);
+        double limit = WAIT_WANDER_RADIUS + WAIT_WANDER_SLACK;
+        if (offsetDistance > limit) {
+            // Walk back in, a little past the anchor so it does not hover on the edge.
+            double backScale = Math.max(0.0, (offsetDistance - WAIT_WANDER_RADIUS * 0.5)) / offsetDistance;
+            Location back = new Location(world,
+                    npcLocation.getX() - offsetX * backScale,
+                    npcLocation.getY(),
+                    npcLocation.getZ() - offsetZ * backScale);
+            if (isFreeForCompanion(back)) {
+                return back;
+            }
+        }
+
+        // Otherwise pick a nearby point to head for. The distance is short so the companion
+        // meanders rather than crossing the area in a straight line.
+        for (int attempt = 0; attempt < 12; attempt++) {
+            double angle = Math.random() * Math.PI * 2.0;
+            double radius = 1.5 + Math.random() * 2.5;
+            Location candidate = new Location(world,
+                    npcLocation.getX() + Math.sin(angle) * radius,
+                    npcLocation.getY(),
+                    npcLocation.getZ() + Math.cos(angle) * radius);
+            if (!isFreeForCompanion(candidate)) {
+                continue;
+            }
+            // Stay inside the wander radius around the anchor.
+            double candidateOffsetX = candidate.getX() - anchor.getX();
+            double candidateOffsetZ = candidate.getZ() - anchor.getZ();
+            if (candidateOffsetX * candidateOffsetX + candidateOffsetZ * candidateOffsetZ
+                    > WAIT_WANDER_RADIUS * WAIT_WANDER_RADIUS) {
+                continue;
+            }
+            // The point must be reachable from where the companion stands, so it does not try to
+            // walk into a wall to get there.
+            List<org.bukkit.util.Vector> route = PathPlanner.findPath(world, npcLocation, candidate,
+                    PATH_RADIUS, false, false, false);
+            if (!route.isEmpty()) {
+                return candidate;
+            }
+        }
+        // Nowhere to go: rest here for a while and try again later.
+        state.waitSpotPaused = true;
+        state.waitNextTurnTick = Bukkit.getCurrentTick() + WAIT_REST_MIN_TICKS
+                + (long) (Math.random() * (WAIT_REST_MAX_TICKS - WAIT_REST_MIN_TICKS));
+        return npcLocation.clone();
+    }
+
+    /**
+     * Shows or hides the companion's sword, following what it is doing.
+     *
+     * <p>The sword is only drawn when the companion actually has a mob to fight. A companion
+     * that is following the owner, idling, or waiting at its spot keeps its hands empty; it
+     * draws the sword when it decides to attack and puts it away once the fight is over.</p>
+     */
+    private static void updateSword(Mannequin npc, boolean fighting) {
         org.bukkit.inventory.EntityEquipment equipment = npc.getEquipment();
         if (equipment == null) {
             return;
         }
-        equipment.setItemInMainHand(armed
+        boolean armed = equipment.getItemInMainHand().getType() != Material.AIR;
+        if (armed == fighting) {
+            return;
+        }
+        equipment.setItemInMainHand(fighting
                 ? new org.bukkit.inventory.ItemStack(Material.IRON_SWORD)
                 : null);
     }
@@ -2921,8 +3245,9 @@ public final class CompanionManager {
     public void despawn(Player owner, String archetype) {
         String kind = archetype.toLowerCase(Locale.ROOT);
         CompanionKey key = new CompanionKey(owner.getUniqueId(), kind);
-        cancel(key);
+        // Take the id before cancel() clears the bookkeeping, so the entity itself can be removed.
         UUID npcId = ownerToNpc.remove(key);
+        cancel(key, npcId == null ? null : Bukkit.getEntity(npcId));
         // The companion is gone, so its owner may no longer receive its effects.
         owner.removeScoreboardTag(activeTag(kind));
         if (npcId == null) {
@@ -2975,6 +3300,14 @@ public final class CompanionManager {
      * cleaned up too. This is used on disable and by the admin clear command.</p>
      */
     public void despawnEverything() {
+        // Release the chunk tickets first: a ticket left behind keeps a chunk pinned for the
+        // rest of the server's life, long after the companion is gone.
+        for (Map.Entry<CompanionKey, FollowState> entry : followStates.entrySet()) {
+            Entity companion = companionOf(entry.getKey());
+            if (companion != null) {
+                releaseChunk(companion, entry.getValue());
+            }
+        }
         for (BukkitTask task : followTasks.values()) {
             task.cancel();
         }
@@ -3010,12 +3343,11 @@ public final class CompanionManager {
     }
 
     /**
-     * The companions the shared {@code /ikut}, {@code /kesini}, {@code /serang} and {@code /tahan}
+     * The companions the shared {@code /ikut}, {@code /kesini} and {@code /tunggu}
      * commands may touch.
      *
      * <p>Eris is deliberately excluded. She is a standalone companion with her own commands, so
-     * the pair-wide commands must never reach her — otherwise {@code /serang} would quietly arm
-     * a companion the owner never addressed.</p>
+     * the pair-wide commands must never reach her.</p>
      */
     private static final List<String> PAIRED_ARCHETYPES = List.of("yui", "sandrone");
 
@@ -3039,6 +3371,21 @@ public final class CompanionManager {
         return setMode(owner, archetype, FollowMode.FOLLOW);
     }
 
+    /**
+     * Tells the owner's companions to wait where they are instead of following.
+     *
+     * <p>The companion keeps the spot it is standing in as its anchor and only wanders a few
+     * blocks around it, so it stays where it was left while still looking alive. It is not
+     * rescued by teleport in this mode: being far from the owner is exactly what was asked
+     * for.</p>
+     *
+     * @param archetype "yui", "sandrone", or "semua" for both
+     * @return how many companions were actually switched
+     */
+    public int callWait(Player owner, String archetype) {
+        return setMode(owner, archetype, FollowMode.WAIT);
+    }
+
     private int setMode(Player owner, String archetype, FollowMode mode) {
         int changed = 0;
         for (Map.Entry<CompanionKey, FollowState> entry : followStates.entrySet()) {
@@ -3058,6 +3405,13 @@ public final class CompanionManager {
             savedModes.put(key, mode);
             state.closeTarget = null;
             state.closeTargetTick = Long.MIN_VALUE;
+            // A new standing behaviour means the old waiting spot is meaningless: the companion
+            // has to be told where to wait again.
+            state.waitSpot = null;
+            state.waitWanderTarget = null;
+            state.waitSpotPickedTick = Long.MIN_VALUE;
+            state.waitSpotPaused = false;
+            state.waitNextTurnTick = Long.MIN_VALUE;
             // Force a fresh route immediately after switching modes.
             state.path = List.of();
             state.plannedGoal = null;
@@ -3097,16 +3451,17 @@ public final class CompanionManager {
         return state == null ? null : state.mode;
     }
 
-    /**
-     * Whether a companion is currently allowed to attack, or false when it is not active.
-     */
-    public boolean isAttacking(Player owner, String archetype) {
-        FollowState state = followStates.get(
-                new CompanionKey(owner.getUniqueId(), archetype.toLowerCase(Locale.ROOT)));
-        return state != null && state.attackEnabled;
+    private void cancel(CompanionKey key) {
+        cancel(key, companionOf(key));
     }
 
-    private void cancel(CompanionKey key) {
+    /**
+     * Stops tracking a companion and releases everything it holds.
+     *
+     * @param companion the companion entity, when it is known. It is passed in because the
+     *                 bookkeeping may already have been cleared by the caller.
+     */
+    private void cancel(CompanionKey key, Entity companion) {
         BukkitTask task = followTasks.remove(key);
         if (task != null) {
             task.cancel();
@@ -3114,6 +3469,29 @@ public final class CompanionManager {
         FollowState state = followStates.remove(key);
         if (state != null) {
             closeOwnDoors(state);
+            // The chunk ticket has to go with the companion, or the chunk stays pinned for the
+            // rest of the server's life.
+            if (companion != null) {
+                releaseChunk(companion, state);
+            }
+            // A companion that stopped being tracked is gone for good. The bookkeeping and the
+            // owner's tag have to go with it, or the owner would still count as having this
+            // companion: the buff and voice scripts would keep firing, and their sound would
+            // fall back to the owner instead of the companion's own body.
+            ownerToNpc.remove(key);
+            Player owner = Bukkit.getPlayer(key.ownerId());
+            if (owner != null) {
+                owner.removeScoreboardTag(activeTag(key.archetype()));
+            }
         }
+    }
+
+    /** The live companion entity of the given key, or null when it is gone. */
+    private Entity companionOf(CompanionKey key) {
+        UUID npcId = ownerToNpc.get(key);
+        if (npcId == null) {
+            return null;
+        }
+        return Bukkit.getEntity(npcId);
     }
 }

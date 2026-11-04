@@ -246,8 +246,15 @@ if (-not $SkipDeploy -and $server) {
     } else {
         Write-Host ("  jar: " + (Get-Item $jarOut).Length + " bytes -> plugin/build (folder plugins server tidak ada)") -ForegroundColor Yellow
     }
-} else {
+} elseif ($SkipDeploy) {
+    # Penting: dengan -SkipDeploy JAR TIDAK masuk ke folder plugins server. Yang ada di
+    # plugin/build hanya hasil build; server masih menjalankan versi lama sampai JAR
+    # disalin manual ke sana.
     Write-Host ("  jar: " + (Get-Item $jarOut).Length + " bytes -> plugin/build") -ForegroundColor Yellow
+    Write-Host '  PERINGATAN: -SkipDeploy dipakai, JAR TIDAK disalin ke server plugins.' -ForegroundColor Yellow
+    Write-Host '  Salin manual, atau jalankan ulang tanpa -SkipDeploy.' -ForegroundColor Yellow
+} else {
+    Write-Host ("  jar: " + (Get-Item $jarOut).Length + " bytes -> plugin/build (server tidak ditemukan)") -ForegroundColor Yellow
 }
 
 Write-Host ''
