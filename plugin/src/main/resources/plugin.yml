@@ -27,18 +27,14 @@ commands:
     description: Bring your companions back to the normal formation and distance
     usage: /ikut [yui|sandrone|semua]
     permission: companion.npc.close
-  serang:
-    description: Let your companions fight hostile mobs that attack you
-    usage: /serang [yui|sandrone|semua]
-    permission: companion.npc.attack
-  tahan:
-    description: Tell your companions to hold their strikes
-    usage: /tahan [yui|sandrone|semua]
-    permission: companion.npc.attack
+  tunggu:
+    description: Tell your companions to wait where they are instead of following you
+    usage: /tunggu [yui|sandrone|semua]
+    permission: companion.npc.close
   eris:
     aliases: [eris-chan]
     description: Call Eris, the standalone companion with one permanent owner
-    usage: /eris [ikut|kesini|serang|tahan|off]
+    usage: /eris [ikut|kesini|tunggu|off]
     permission: companion.npc.eris
 permissions:
   companion.npc.yui:

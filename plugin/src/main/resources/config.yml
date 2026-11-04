@@ -52,16 +52,23 @@ idle-look-mob-radius: 12
 # comfort distance it almost never ran outside of standing on top of the owner.
 idle-look-standstill-distance: 6
 
-# How far an owner-threatening hostile may be for the companion to defend them.
-# Currently fixed to an 8-block radius by the defensive attack behaviour.
+# How far a hostile mob may be from a companion for the companion to defend itself and its owner.
+# The search is centred on the companion, so a companion that was told to wait defends the
+# ground it is holding and never leaves to chase the owner across the map.
 attack-search-radius: 8.0
+
+# How far a waiting companion reacts to hostile mobs around the spot it was told to wait at.
+# A mob inside this radius is spotted and fought; one further out is ignored, so the companion
+# holds its post instead of chasing. This is separate from the 5-block idle wander radius:
+# raising it widens the threats it reacts to, not the area it strolls around.
+wait-threat-radius: 12.0
 
 # Damage per melee swing in defensive attack mode.
 attack-damage: 5.0
 attack-cooldown-ticks: 16
 
-# Defensive mob markers are visual particles + chat alerts, only while /serang is active.
-# Yui watches skeletons; Sandrone watches creepers. Radius is centered on the owner (10-24).
+# Defensive mob markers are visual particles + chat alerts.
+# Yui watches skeletons; Sandrone watches creepers. Radius is centered on the companion (10-24).
 yui-skeleton-mark-radius: 16.0
 sandrone-creeper-mark-radius: 16.0
 
