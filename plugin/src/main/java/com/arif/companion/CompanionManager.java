@@ -342,6 +342,13 @@ public final class CompanionManager {
     /** How far to the owner's left or right a companion stands while following. */
     private static final double SIDE_FORMATION_OFFSET = 1.6;
     /**
+     * How far apart two companions standing in the same line on one side are.
+     *
+     * <p>A little more than the width of a mannequin, so they stand shoulder to shoulder
+     * without clipping into each other.</p>
+     */
+    private static final double FORMATION_RANK_SPACING = 1.4;
+    /**
      * How far to the owner's left or right a companion stands in close mode.
      *
      * <p>Close mode ignores the formation entirely: both companions converge on this one spot
@@ -1332,9 +1339,11 @@ public final class CompanionManager {
         // make the companion pace about. A side taken as a fallback does not become permanent —
         // the natural side is reclaimed as soon as there is room again.
         double held = state.formationSide;
+        int rank = formationRank(state.archetype);
         if (held == 0.0 || state.formationIsFallback) {
             // (Re)claim the natural side when nothing is held or the hold was only a fallback.
-            Location natural = sideSpotAt(ownerLocation, state.formationYaw, naturalLeft ? 1.0 : -1.0);
+            Location natural = sideSpotAt(ownerLocation, state.formationYaw,
+                    naturalLeft ? 1.0 : -1.0, rank);
             if (isFreeForCompanion(natural)) {
                 state.formationSide = naturalLeft ? 1.0 : -1.0;
                 state.formationIsFallback = false;
@@ -1351,9 +1360,11 @@ public final class CompanionManager {
 
         Location[] candidates = new Location[3];
         // The side it holds first...
-        candidates[0] = sideSpotAt(ownerLocation, state.formationYaw, wantLeft ? 1.0 : -1.0);
+        candidates[0] = sideSpotAt(ownerLocation, state.formationYaw,
+                wantLeft ? 1.0 : -1.0, rank);
         // ...then the opposite side...
-        candidates[1] = sideSpotAt(ownerLocation, state.formationYaw, wantLeft ? -1.0 : 1.0);
+        candidates[1] = sideSpotAt(ownerLocation, state.formationYaw,
+                wantLeft ? -1.0 : 1.0, rank);
         // ...then a neutral spot in front of the owner, based on the anchored formation direction.
         double yaw = Math.toRadians(state.formationYaw);
         candidates[2] = new Location(world,
@@ -1929,11 +1940,50 @@ public final class CompanionManager {
 
     /** Returns the spot 1.2 blocks to the owner's left/right, relative to a fixed formation yaw. */
     private static Location sideSpotAt(Location ownerLocation, float formationYaw, double side) {
+        return sideSpotAt(ownerLocation, formationYaw, side, 0);
+    }
+
+    /**
+     * The spot a companion stands on, at a given rank down the line on her side.
+     *
+     * <p>Three companions share each side of the owner. Without a rank they would all aim at
+     * the same block and end up standing inside each other — which is exactly what a single
+     * {@code /istri} used to produce. The first companion holds the owner's shoulder, and each
+     * one after her steps back along the owner's facing, so the side reads as a short line
+     * rather than a pile.</p>
+     *
+     * @param rank 0 for the companion nearest the owner, 1 for the next, and so on
+     */
+    private static Location sideSpotAt(Location ownerLocation, float formationYaw, double side,
+                                       int rank) {
         double angle = Math.toRadians(formationYaw) + side * Math.PI / 2.0;
-        return new Location(ownerLocation.getWorld(),
-                ownerLocation.getX() - Math.sin(angle) * SIDE_FORMATION_OFFSET,
-                ownerLocation.getY(),
-                ownerLocation.getZ() + Math.cos(angle) * SIDE_FORMATION_OFFSET);
+        double x = ownerLocation.getX() - Math.sin(angle) * SIDE_FORMATION_OFFSET;
+        double z = ownerLocation.getZ() + Math.cos(angle) * SIDE_FORMATION_OFFSET;
+        if (rank > 0) {
+            // Step backwards along the owner's facing: +sin for x, -cos for z.
+            double yaw = Math.toRadians(formationYaw);
+            x += Math.sin(yaw) * rank * FORMATION_RANK_SPACING;
+            z -= Math.cos(yaw) * rank * FORMATION_RANK_SPACING;
+        }
+        return new Location(ownerLocation.getWorld(), x, ownerLocation.getY(), z);
+    }
+
+    /**
+     * How far down its side a companion stands.
+     *
+     * <p>The three on the left are Yui, Furina, Columbina; the three on the right are Sandrone,
+     * Ei, Escoffier. Each group runs from the owner's shoulder outwards, so a companion keeps
+     * the same place in the line whether she is called on her own or as part of {@code /istri}.</p>
+     *
+     * @return 0 for the companion nearest the owner, 1 for the next, 2 for the last
+     */
+    private static int formationRank(String archetype) {
+        return switch (archetype.toLowerCase(Locale.ROOT)) {
+            case "yui", "sandrone" -> 0;
+            case "furina", "ei" -> 1;
+            case "columbina", "escoffier" -> 2;
+            default -> 0;
+        };
     }
 
     /**
@@ -1944,11 +1994,12 @@ public final class CompanionManager {
      */
     private static Location spawnFormationSpot(Location ownerLocation, String archetype, float formationYaw) {
         boolean wantLeft = naturalSide(archetype) > 0.0;
-        Location own = sideSpotAt(ownerLocation, formationYaw, wantLeft ? 1.0 : -1.0);
+        int rank = formationRank(archetype);
+        Location own = sideSpotAt(ownerLocation, formationYaw, wantLeft ? 1.0 : -1.0, rank);
         if (isFreeForCompanion(own)) {
             return own;
         }
-        Location other = sideSpotAt(ownerLocation, formationYaw, wantLeft ? -1.0 : 1.0);
+        Location other = sideSpotAt(ownerLocation, formationYaw, wantLeft ? -1.0 : 1.0, rank);
         if (isFreeForCompanion(other)) {
             return other;
         }
@@ -3707,6 +3758,17 @@ public final class CompanionManager {
      */
     private static final List<String> PAIRED_ARCHETYPES =
             List.of("yui", "sandrone", "furina", "ei", "columbina", "escoffier");
+
+    /**
+     * Every companion Arif can call at once: the original pair and the four newer ones.
+     *
+     * <p>Eris is deliberately not here — she belongs to her own owner, not to this group.</p>
+     *
+     * @return the archetypes, in the order they are called
+     */
+    public static List<String> pairedArchetypes() {
+        return PAIRED_ARCHETYPES;
+    }
 
     /**
      * The side of the owner a companion naturally stands on.

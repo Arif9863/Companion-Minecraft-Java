@@ -145,6 +145,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("kesini", new ModeCommand(CompanionManager.FollowMode.CLOSE, "Kesini"));
         registerCommand("ikut", new ModeCommand(CompanionManager.FollowMode.FOLLOW, "Ikut"));
         registerCommand("tunggu", new WaitCommand());
+        registerCommand("istri", new IstriCommand());
         registerCommand("companionnpc", new AdminCommand());
         registerCommand("eris", new ErisCommand());
         listener = new CompanionListener(this);
@@ -684,6 +685,63 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 String prefix = args[0].toLowerCase(Locale.ROOT);
                 options.removeIf(option -> !option.startsWith(prefix));
                 return options;
+            }
+            return List.of();
+        }
+    }
+
+    /**
+     * The {@code /istri} command: calls every companion that belongs to this owner at once.
+     *
+     * <p>It is the one-step version of typing each {@code /yui-npc}, {@code /sandrone-npc},
+     * {@code /furina-npc} and so on in turn. Companions that are already present are replaced,
+     * so running it again is a clean reset rather than a duplicate spawn. Eris is not part of
+     * the group, so she is never touched here.</p>
+     */
+    private final class IstriCommand implements CommandExecutor, TabCompleter {
+
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage(Component.text("This command can only be used by a player.",
+                        NamedTextColor.RED));
+                return true;
+            }
+            // The argument is a formality: /istri and /istri arif both mean the same thing.
+            if (args.length > 0 && !args[0].equalsIgnoreCase("arif")) {
+                player.sendMessage(Component.text("Usage: /istri [arif]", NamedTextColor.YELLOW));
+                return true;
+            }
+            if (!mayUseYuiAndSandrone(player.getUniqueId())) {
+                player.sendMessage(Component.text(
+                        "Istri-istri Arif hanya untuk Arif sendiri.", NamedTextColor.RED));
+                return true;
+            }
+
+            List<String> summoned = new ArrayList<>();
+            for (String archetype : CompanionManager.pairedArchetypes()) {
+                if (manager.spawn(player, archetype)) {
+                    summoned.add(labelFor(archetype));
+                }
+            }
+            if (summoned.isEmpty()) {
+                player.sendMessage(Component.text(
+                        "Tidak ada istri yang bisa dipanggil sekarang.", NamedTextColor.YELLOW));
+                return true;
+            }
+            // They arrive one by one, but the owner gets a single line instead of six.
+            player.sendMessage(Component.text(
+                    summoned.size() + " istri siap mengikutimu: " + String.join(", ", summoned) + ".",
+                    NamedTextColor.LIGHT_PURPLE));
+            return true;
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias,
+                                          String[] args) {
+            if (args.length == 1) {
+                String prefix = args[0].toLowerCase(Locale.ROOT);
+                return List.of("arif").stream().filter(option -> option.startsWith(prefix)).toList();
             }
             return List.of();
         }

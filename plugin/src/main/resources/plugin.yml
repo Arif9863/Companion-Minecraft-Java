@@ -51,6 +51,10 @@ commands:
     description: Tell your companions to wait where they are instead of following you
     usage: /tunggu [yui|sandrone|semua]
     permission: companion.npc.close
+  istri:
+    description: Call every companion that belongs to this owner at once
+    usage: /istri [arif]
+    permission: companion.npc.close
   eris:
     aliases: [eris-chan]
     description: Call Eris, the standalone companion with one permanent owner

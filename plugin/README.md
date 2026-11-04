@@ -69,6 +69,10 @@ there yourself, or rely on the Maven fallback above.
 - `/ikut [yui|sandrone|furina|ei|columbina|escoffier|semua]` — switch them back to **FOLLOW** mode.
 - `/tunggu [yui|sandrone|furina|ei|columbina|escoffier|semua]` — switch them to **WAIT** mode:
   they stay where they are.
+- `/istri` (alias `/istri arif`) — call **every companion you own at once**: Yui, Sandrone,
+  Furina, Ei, Columbina, and Escoffier, in one command. Companions that are already present are
+  replaced rather than duplicated, so running it again is a clean reset. It never touches Eris,
+  who belongs to her own owner.
 
 These commands cover **Arif's own companions only**: the original Yui–Sandrone pair plus the
 four newer ones. `semua` means the whole group, never Eris — she has her own commands below.
@@ -209,7 +213,7 @@ A companion has exactly one standing behaviour at a time. **The mode stays in fo
 
 | | FOLLOW (`/ikut`) | CLOSE (`/kesini`) | WAIT (`/tunggu`) |
 |---|---|---|---|
-| Position | Formation: Yui on your left, Sandrone on your right | As close as the geometry allows, no formation | Stays where it was told to wait |
+| Position | Formation: a line on each side — Yui, Furina, Columbina on your left; Sandrone, Ei, Escoffier on your right | As close as the geometry allows, no formation | Stays where it was told to wait |
 | Standing distance | `comfort-distance` (3.0 blocks) | `close-distance` (1.8 blocks) | Free-roams up to 5 blocks around its own spot |
 | Fights | Hostile mobs coming for you or a companion | Same | Hostile mobs coming inside `wait-threat-radius` of its own spot — it stays on its ground |
 | Emergency teleport target | Its own formation side | A spot in the room you can walk to | None — it is never pulled back to you |
