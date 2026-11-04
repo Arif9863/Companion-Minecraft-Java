@@ -45,6 +45,15 @@ final class RangedTridentAttack {
     /** Upper bound for the simulated flight, so a bad input can never loop for long. */
     private static final int MAX_SIMULATED_TICKS = 200;
 
+    /**
+     * The steepest throw, up or down, that the solver will try.
+     *
+     * <p>Both directions are needed: a target below the thrower needs a downward pitch, and a
+     * target above needs an upward one. Without the downward half the solver sends the trident
+     * straight ahead into the floor whenever the mob stands below the companion.</p>
+     */
+    private static final int MAX_PITCH_DEGREES = 80;
+
     private RangedTridentAttack() {
     }
 
@@ -155,8 +164,11 @@ final class RangedTridentAttack {
 
         Vector best = null;
         double bestError = Double.MAX_VALUE;
-        // One degree per step from a low lob up to a steep throw.
-        for (int degrees = 0; degrees <= 80; degrees++) {
+        // One degree per step, from a steep downward throw up to a steep lob. The downward half
+        // matters: a target that stands below the companion needs a negative pitch, and a solver
+        // that only tried upward angles would send the trident straight ahead into the ground
+        // and miss a mob right below the thrower.
+        for (int degrees = -MAX_PITCH_DEGREES; degrees <= MAX_PITCH_DEGREES; degrees++) {
             double pitch = Math.toRadians(degrees);
             double horizontalSpeed = Math.cos(pitch) * speed;
             double verticalSpeed = Math.sin(pitch) * speed;

@@ -102,6 +102,38 @@ public final class CompanionListener implements Listener {
         plugin.getManager().openErisPouch(player);
     }
 
+    /**
+     * Right-clicking a companion of Arif's group opens her pouch — but only for the player who
+     * owns her.
+     *
+     * <p>Everybody else gets the companion's own refusal instead of the bag, so a pouch never
+     * leaks to another player on the server.</p>
+     */
+    @EventHandler
+    public void onCompanionInteract(PlayerInteractEntityEvent event) {
+        if (!(event.getRightClicked() instanceof Mannequin mannequin)) {
+            return;
+        }
+        String archetype = null;
+        for (String tag : mannequin.getScoreboardTags()) {
+            if (tag.startsWith("companion_") && CompanionManager.hasPouch(
+                    tag.substring("companion_".length()))) {
+                archetype = tag.substring("companion_".length());
+                break;
+            }
+        }
+        if (archetype == null) {
+            return;
+        }
+        event.setCancelled(true);
+        Player player = event.getPlayer();
+        if (!plugin.getManager().canOpenCompanionPouch(player, mannequin.getUniqueId())) {
+            plugin.getManager().denyCompanion(player, archetype);
+            return;
+        }
+        plugin.getManager().openCompanionPouch(player, archetype);
+    }
+
     /** Remembers which mob a companion hit, so the kill can be credited to her owner. */
     @EventHandler
     public void onEntityDamage(EntityDamageByEntityEvent event) {
@@ -162,12 +194,13 @@ public final class CompanionListener implements Listener {
         }
     }
 
-    /** Saves Eris's pouch when its inventory closes. */
+    /** Saves a companion's pouch when its inventory closes. */
     @EventHandler
     public void onInventoryClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player player)) {
             return;
         }
+        plugin.getManager().saveCompanionPouch(player, event.getInventory());
         plugin.getManager().saveErisPouch(player, event.getInventory());
     }
 }

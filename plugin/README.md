@@ -133,6 +133,13 @@ message. The lines are plain text for now: the voice files are still being rende
 sound is attached yet. Once the files exist, the plugin plays the matching resource-pack sound
 event (`furina.idle_01`, `ei.kill_02`, and so on) automatically.
 
+**Their own pouch.** Right-click any of the four to open a private 27-slot bag, the way Yui and
+Sandrone have one. Each bag is saved on its own — `furina-pouch.yml`, `ei-pouch.yml`,
+`columbina-pouch.yml`, `escoffier-pouch.yml` in `plugins/CompanionNPCs/` — so the four never
+share an inventory or overwrite each other. Only the player the companion belongs to can open
+it: anybody else is refused in the companion's own words. The bag is opened by right-clicking
+the companion itself, never by walking up to somebody else's.
+
 ## Eris (standalone companion)
 
 Eris is a companion of her own, not a third member of the Yui–Sandrone pair.
@@ -238,8 +245,23 @@ Drop Minecraft player skin PNG files (64x64 PNG, classic or slim model) here:
 
 - `resource-pack/assets/companion/textures/yui.png`
 - `resource-pack/assets/companion/textures/sandrone.png`
+- `resource-pack/assets/companion/textures/eris.png`
+- `resource-pack/assets/companion/textures/furina.png`
+- `resource-pack/assets/companion/textures/ei.png`
+- `resource-pack/assets/companion/textures/columbina.png`
+- `resource-pack/assets/companion/textures/escoffier.png`
 
-Use matching profile patch keys `companion:yui` and `companion:sandrone`. Rebuild `companion-voices-26.3.zip` after adding skins, then update the client's `.minecraft/resourcepacks/` copy. The plugin sets this pack key on each mannequin profile.
+Use matching profile patch keys `companion:yui`, `companion:eris`, and so on — one per
+companion.
+
+File names must be a valid Minecraft resource location: only `a-z0-9_-.` are allowed, and a
+space is not one of them. The name of the file is what the patch key is built from, so a file
+called `sandrone mirrored analysis.png` would not load — it would need to be a legal name, such
+as `sandrone_mirrored_analysis.png`, with the plugin's mapping pointing at it. `companion:sandrone`
+points at `sandrone.png`, which now holds Sandrone's mirrored skin.
+
+Build `companion-voices-26.3.zip` after adding skins, then update the client's
+`.minecraft/resourcepacks/` copy. The plugin sets this pack key on each mannequin profile.
 
 ### Hosted URL fallback
 

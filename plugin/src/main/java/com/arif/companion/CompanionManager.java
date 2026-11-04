@@ -1016,10 +1016,39 @@ public final class CompanionManager {
     /**
      * Spawns a companion for a player, replacing only that character's existing mannequin.
      *
+     * <p>The permission is checked here as well as in the command, so the restriction holds even
+     * if another plugin calls this method directly. Only the players listed as companion owners
+     * may bring a companion into the world.</p>
+     *
      * @param owner     player the companion belongs to
-     * @param archetype "yui" or "sandrone"
+     * @param archetype the companion to call, for example {@code furina}
+     * @return true when the companion was spawned
      */
-    public void spawn(Player owner, String archetype) {
+    public boolean spawn(Player owner, String archetype) {
+        return spawn(owner, archetype, false);
+    }
+
+    /**
+     * Spawns a companion, optionally skipping the companion-owner check.
+     *
+     * <p>Eris is the one companion that does not belong to Arif's group: she is reserved for
+     * her own owner and for her testers, and the {@code /eris} command has already decided
+     * whether the player may have her. That decision is what the bypass stands for, so the
+     * check is not simply turned off for everybody.</p>
+     *
+     * @param owner     player the companion belongs to
+     * @param archetype the companion to call
+     * @param skipOwnerCheck true when the caller has already checked access itself
+     * @return true when the companion was spawned
+     */
+    public boolean spawn(Player owner, String archetype, boolean skipOwnerCheck) {
+        if (owner == null || archetype == null) {
+            return false;
+        }
+        if (!skipOwnerCheck && !plugin.mayUseYuiAndSandrone(owner.getUniqueId())) {
+            denyCompanion(owner, archetype);
+            return false;
+        }
         String kind = archetype.toLowerCase(Locale.ROOT);
         CompanionKey key = new CompanionKey(owner.getUniqueId(), kind);
         despawn(owner, kind);
@@ -1028,7 +1057,7 @@ public final class CompanionManager {
         Location spot = spawnFormationSpot(owner.getLocation(), kind, initialFormationYaw);
         Mannequin npc = createAt(spot, kind, owner.getName());
         if (npc == null) {
-            return;
+            return false;
         }
 
         ownerToNpc.put(key, npc.getUniqueId());
@@ -1040,6 +1069,7 @@ public final class CompanionManager {
         // The newer companions answer when they are called.
         dialogue.onCall(owner, kind, npc.getLocation());
         plugin.getLogger().info(() -> "Spawned " + kind + " mannequin for " + owner.getName());
+        return true;
     }
 
     /**
@@ -1137,7 +1167,7 @@ public final class CompanionManager {
     /** Applies the configured skin, preferring a hosted URL and falling back to the pack texture. */
     private void applySkin(Mannequin npc, String archetype, String ownerName) {
         String url = plugin.skinUrl(archetype);
-        Key packKey = plugin.packSkinKey(archetype);
+        Key packKey = safePackSkinKey(archetype);
         PlayerTextures.SkinModel model = plugin.skinModelFor(archetype);
 
         ResolvableProfile profile;
@@ -1151,6 +1181,25 @@ public final class CompanionManager {
         plugin.getLogger().fine(() -> "Applied " + archetype + " skin for " + ownerName
                 + " (url=" + (url == null || url.isBlank() ? "none" : "set")
                 + ", pack=" + (packKey == null ? "none" : packKey.asString()) + ")");
+    }
+
+    /**
+     * The resource-pack key for a companion's skin, or {@code null} when it cannot be built.
+     *
+     * <p>A pack key is a Minecraft resource location, so a file name that is not a legal one —
+     * a space, for example — fails the moment the key is constructed. The mannequin is already
+     * in the world by this point, and giving up on it half way would leave an untracked companion
+     * behind, so the bad name is only logged here and the spawn carries on without its patch skin
+     * instead.</p>
+     */
+    private Key safePackSkinKey(String archetype) {
+        try {
+            return plugin.packSkinKey(archetype);
+        } catch (RuntimeException ex) {
+            plugin.getLogger().warning("Invalid resource-pack skin name for " + archetype
+                    + " (" + ex.getMessage() + "): companion spawns without its patch.");
+            return null;
+        }
     }
 
     /** Builds the floating name shown above the companion. */
@@ -3435,6 +3484,116 @@ public final class CompanionManager {
         Entity eris = Bukkit.getEntity(erisEntityId);
         return eris instanceof Mannequin mannequin
                 && mannequin.getScoreboardTags().contains("companion_eris");
+    }
+
+    /**
+     * The companions of Arif's group that carry a pouch.
+     *
+     * <p>Each of them has her own bag, saved separately, and only the owner of the companion may
+     * open it.</p>
+     */
+    private static final List<String> POUCH_ARCHETYPES =
+            List.of("furina", "ei", "columbina", "escoffier");
+
+    /** Whether this archetype is one of Arif's companions that carries a pouch. */
+    public static boolean hasPouch(String archetype) {
+        return archetype != null
+                && POUCH_ARCHETYPES.contains(archetype.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Whether the given player owns the given companion, and may therefore open its pouch.
+     *
+     * <p>Ownership is decided by the companion itself, not by the archetype: a companion belongs
+     * to the player who called her, so only that player's pouch opens. A player who is allowed to
+     * use the companion group may call a companion, but the companion is then <em>his</em>, and
+     * only his own bag is open to him. That keeps the bags of one owner from being opened by
+     * another, whoever may call whom.</p>
+     */
+    public boolean canOpenCompanionPouch(Player player, UUID companionEntityId) {
+        if (player == null) {
+            return false;
+        }
+        Entity companion = Bukkit.getEntity(companionEntityId);
+        if (!(companion instanceof Mannequin mannequin)) {
+            return false;
+        }
+        for (String tag : mannequin.getScoreboardTags()) {
+            if (!tag.startsWith("companion_")) {
+                continue;
+            }
+            String archetype = tag.substring("companion_".length());
+            if (!hasPouch(archetype)) {
+                continue;
+            }
+            // The tag is on the companion, but only the owner knows which key it is filed under.
+            CompanionKey key = new CompanionKey(player.getUniqueId(), archetype);
+            UUID npcId = ownerToNpc.get(key);
+            return npcId != null && npcId.equals(companionEntityId);
+        }
+        return false;
+    }
+
+    /**
+     * Opens a companion's pouch for its owner.
+     *
+     * <p>The bag is saved in the plugin's own data folder, one file per companion, so the four
+     * of them never share a single inventory or overwrite each other.</p>
+     */
+    public void openCompanionPouch(Player owner, String archetype) {
+        if (owner == null || !hasPouch(archetype)) {
+            return;
+        }
+        String kind = archetype.toLowerCase(Locale.ROOT);
+        CompanionKey key = new CompanionKey(owner.getUniqueId(), kind);
+        UUID npcId = ownerToNpc.get(key);
+        if (npcId == null || !canOpenCompanionPouch(owner, npcId)) {
+            return;
+        }
+        File file = pouchFile(kind);
+        FileConfiguration config = YamlConfiguration.loadConfiguration(file);
+        String path = owner.getUniqueId() + "." + kind;
+        CompanionPouchHolder pouch = new CompanionPouchHolder(owner.getUniqueId(), kind);
+        Inventory inventory = pouch.getInventory();
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            ItemStack item = config.getItemStack(path + "." + slot);
+            if (item != null) {
+                inventory.setItem(slot, item);
+            }
+        }
+        owner.openInventory(inventory);
+    }
+
+    /**
+     * Saves a companion's pouch when its window is closed.
+     *
+     * <p>Only an inventory whose holder is a pouch of that very companion is written back, so a
+     * chest the owner happens to close is never touched.</p>
+     */
+    public void saveCompanionPouch(Player owner, Inventory inventory) {
+        if (owner == null || inventory == null
+                || !(inventory.getHolder() instanceof CompanionPouchHolder holder)
+                || !holder.belongsTo(owner)) {
+            return;
+        }
+        String kind = holder.archetype();
+        File file = pouchFile(kind);
+        FileConfiguration config = YamlConfiguration.loadConfiguration(file);
+        String path = owner.getUniqueId() + "." + kind;
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            ItemStack item = inventory.getItem(slot);
+            config.set(path + "." + slot, item == null || item.getType().isAir() ? null : item);
+        }
+        try {
+            config.save(file);
+        } catch (IOException ex) {
+            plugin.getLogger().log(Level.SEVERE, "Could not save " + kind + " pouch to " + file, ex);
+        }
+    }
+
+    /** The file a companion's pouch is saved in. */
+    private File pouchFile(String archetype) {
+        return new File(plugin.getDataFolder(), archetype + "-pouch.yml");
     }
 
     /** Removes the companion of the given archetype owned by the given player, if any. */

@@ -427,8 +427,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     /**
      * The texture file name an archetype uses in the resource pack.
      *
-     * <p>Most archetypes use a file named after themselves. Sandrone has a second, mirrored
-     * variant that replaces the original, so the mapping is explicit rather than derived.</p>
+     * <p>A resource-pack path is a Minecraft resource location, whose rules allow only
+     * {@code a-z0-9_-.} — spaces are illegal — so the file on disk must carry the same name as
+     * the archetype. Sandrone's skin is now the mirrored variant under the plain
+     * {@code sandrone.png} name, so every archetype resolves to its own lower-cased name and the
+     * companion appears under a resource location the client can actually load.
      *
      * @return the file name without its extension, or {@code null} when the archetype is unknown
      */
@@ -436,12 +439,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         if (archetype == null) {
             return null;
         }
-        return switch (archetype.toLowerCase(Locale.ROOT)) {
-            case "sandrone" -> "sandrone mirrored analysis";
-            case "yui", "eris", "furina", "ei", "columbina", "escoffier" ->
-                    archetype.toLowerCase(Locale.ROOT);
-            default -> null;
-        };
+        String name = archetype.toLowerCase(Locale.ROOT);
+        if (!name.matches("[a-z0-9_\\-.]+")) {
+            return null;
+        }
+        return name;
     }
 
     /**
@@ -723,7 +725,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                     manager.denyEris(player);
                     return true;
                 }
-                manager.spawn(player, "eris");
+                manager.spawn(player, "eris", true);
                 player.sendMessage(Component.text("Eris sekarang mengikuti Ferdi-Kun.", NamedTextColor.RED));
                 return true;
             }
