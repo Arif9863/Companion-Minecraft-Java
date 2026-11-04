@@ -15,6 +15,26 @@ commands:
     description: Spawn or dismiss Sandrone mannequin NPC companion
     usage: /sandrone-npc [skin-url|default|off]
     permission: companion.npc.sandrone
+  furina-npc:
+    aliases: [furina-chan]
+    description: Spawn or dismiss Furina mannequin NPC companion
+    usage: /furina-npc [skin-url|default|off]
+    permission: companion.npc.yui
+  ei-npc:
+    aliases: [ei-chan]
+    description: Spawn or dismiss Ei mannequin NPC companion
+    usage: /ei-npc [skin-url|default|off]
+    permission: companion.npc.yui
+  columbina-npc:
+    aliases: [columbina-chan]
+    description: Spawn or dismiss Columbina mannequin NPC companion
+    usage: /columbina-npc [skin-url|default|off]
+    permission: companion.npc.yui
+  escoffier-npc:
+    aliases: [escoffier-chan]
+    description: Spawn or dismiss Escoffier mannequin NPC companion
+    usage: /escoffier-npc [skin-url|default|off]
+    permission: companion.npc.yui
   companionnpc:
     description: Companion NPC administration
     usage: /companionnpc <reload|clear>

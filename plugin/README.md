@@ -61,12 +61,17 @@ there yourself, or rely on the Maven fallback above.
 - `/yui-npc` (alias `/yui-chan`) — spawn or replace the Yui mannequin near you.
 - `/yui-npc off` — dismiss Yui.
 - `/sandrone-npc` (alias `/sandrone-chan`), `/sandrone-npc off` — same for Sandrone.
-- `/kesini [yui|sandrone|semua]` — switch the companions to **CLOSE** mode.
-- `/ikut [yui|sandrone|semua]` — switch them back to **FOLLOW** mode.
-- `/tunggu [yui|sandrone|semua]` — switch them to **WAIT** mode: they stay where they are.
+- `/furina-npc` (alias `/furina-chan`), `/furina-npc off` — same for Furina.
+- `/ei-npc` (alias `/ei-chan`), `/ei-npc off` — same for Ei.
+- `/columbina-npc` (alias `/columbina-chan`), `/columbina-npc off` — same for Columbina.
+- `/escoffier-npc` (alias `/escoffier-chan`), `/escoffier-npc off` — same for Escoffier.
+- `/kesini [yui|sandrone|furina|ei|columbina|escoffier|semua]` — switch them to **CLOSE** mode.
+- `/ikut [yui|sandrone|furina|ei|columbina|escoffier|semua]` — switch them back to **FOLLOW** mode.
+- `/tunggu [yui|sandrone|furina|ei|columbina|escoffier|semua]` — switch them to **WAIT** mode:
+  they stay where they are.
 
-These commands cover **Yui and Sandrone only**. `semua` means the pair, never Eris — she has
-her own commands below.
+These commands cover **Arif's own companions only**: the original Yui–Sandrone pair plus the
+four newer ones. `semua` means the whole group, never Eris — she has her own commands below.
 - `/companionnpc clear` — remove every tagged companion mannequin.
 - `/companionnpc reload` — reload config.
 - `/companionnpc config` — add the options this plugin version knows about to the config file
@@ -85,6 +90,48 @@ Commands intentionally keep the `-npc` suffix so they do not replace the existin
 The Skript `/yui` and `/sandrone` commands check the same list before they say anything. The plugin marks every allowed player with the `companion_npc_user` scoreboard tag, and the scripts refuse outsiders with their own line ("Hati dan kasih Yui hanya untuk Arif") instead of the friendly greeting. The tag is set on join and refreshed by `/companionnpc reload`.
 
 While a companion mannequin is alive, the plugin also sets `companion_active_yui`, `companion_active_sandrone`, or `companion_active_eris` on that companion's owner. Skript uses those tags (not the older `{-yui-active::...}` flags alone) for heal/absorption, DuoVoice, and 3D sound routing, so another player never receives your companion's buffs or hears their lines from the wrong direction.
+
+## The four newer companions (Furina, Ei, Columbina, Escoffier)
+
+These four are Arif's companions and join the original pair in the group commands: `/ikut`,
+`/kesini`, and `/tunggu` all reach them, and `semua` covers the whole group of six. Each has her
+own command (`/furina-npc`, `/ei-npc`, `/columbina-npc`, `/escoffier-npc`), her own skin in the
+resource pack, her own weapon, and her own voice.
+
+**Weapons and fighting style.** Every companion carries a weapon only while she actually has a
+mob to fight, and puts it away again when the fight is over.
+
+| Companion | Weapon | Damage | Style | Reach |
+|---|---|---|---|---|
+| Yui, Sandrone, Eris | iron sword | `attack-damage` (5.0) | swing | melee |
+| Furina | diamond sword | 7 | swing | melee |
+| Ei | diamond spear | 6 | **jab** | melee |
+| Columbina, Escoffier | trident | `attack-damage` | **thrown** | ranged |
+
+- **The jab is a real thrust.** Ei does not sweep the spear like a sword: the thrust uses
+  Paper's `STAB` swing animation, so the arm goes straight forward at the mob.
+- **A thrown companion keeps its distance.** Columbina and Escoffier step back to about
+  8 blocks and throw the trident from there, instead of walking into the mob's face. They strike
+  from up to 18 blocks away — the throw's own range — and turn to face the mob while they throw.
+- **Melee companions close in and stop.** They walk up to the mob and settle about 1.4 blocks
+  short of it, so they are neither shoving into it nor standing a block too far away to swing.
+
+**Support abilities.**
+
+| Companion | Ability | When it triggers | Effect |
+|---|---|---|---|
+| Furina | Water Breathing | the owner is in water | 10 s, re-triggerable after 5 s |
+| Furina | Fire Resistance | the owner is burning (fire or lava) | 10 s, re-triggerable after 5 s |
+| Ei | Strength I | the owner makes a kill | 20 s, granted again after the next kill |
+| Columbina | Swiftness I | a hostile mob is targeting the owner | 15 s, re-triggerable after 5 s |
+| Escoffier | Slowness on the mob | a hostile mob is targeting the owner | 15 s on the mob itself, re-triggerable after 5 s |
+
+**Their own voice.** Each of the four has her own dialogue — 8 idle lines, 2 kill lines, 2
+assist lines, 1 follow-up, plus an on-call, a wait, and a deny line — in her own colour. A
+companion that is not allowed to use them is refused in her own words rather than in a generic
+message. The lines are plain text for now: the voice files are still being rendered, so no
+sound is attached yet. Once the files exist, the plugin plays the matching resource-pack sound
+event (`furina.idle_01`, `ei.kill_02`, and so on) automatically.
 
 ## Eris (standalone companion)
 
@@ -144,7 +191,7 @@ hostile mob that is coming for its owner or for the companion itself, in every m
   Peaceful mobs are never marked.
 - **It is never a target.** Any mob that would choose a companion is refused, so it keeps coming
   for you instead. A companion that had drawn aggro has it handed back to you on the next swing.
-- **Armed only while fighting.** The companion holds an iron sword only while it actually has a
+- **Armed only while fighting.** The companion holds its weapon only while it actually has a
   mob to fight, and puts it away again when the fight is over.
 - Combats take precedence over the formation spot: a companion leaves its side while chasing, and
   returns as soon as the fight ends.

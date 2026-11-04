@@ -62,7 +62,8 @@ public final class CompanionManager {
     private record CompanionKey(UUID ownerId, String archetype) {}
 
     /** Every companion archetype the plugin knows about. */
-    private static final List<String> ARCHETYPES = List.of("yui", "sandrone", "eris");
+    private static final List<String> ARCHETYPES =
+            List.of("yui", "sandrone", "eris", "furina", "ei", "columbina", "escoffier");
 
     /** Session kill/potion/dialogue state for Eris, keyed to her permanent owner. */
     private static final class ErisState {
@@ -223,6 +224,18 @@ public final class CompanionManager {
     private static final double MAX_GLANCE_ANGLE_DEGREES = 90.0;
     /** Ticks a glance lasts: 2-3 seconds, so the behaviour varies between companions. */
     private static final long GLANCE_DURATION_TICKS = 40L;
+
+    /** How far a companion that throws its weapon will throw, in blocks. */
+    private static final double RANGED_THROW_RANGE = 18.0;
+
+    /** Initial speed of a thrown trident, in blocks per tick. */
+    private static final double RANGED_THROW_SPEED = 2.2;
+
+    /** How close a ranged companion stays to its target, so it keeps throwing instead of closing in. */
+    private static final double RANGED_KEEP_DISTANCE = 8.0;
+
+    /** How long Ei's spear thrust animation lasts, in ticks. */
+    private static final int JAB_ANIMATION_TICKS = 4;
     /** Extra random ticks so two companions never glance in lockstep. */
     private static final long GLANCE_DURATION_VARIANCE_TICKS = 20L;
     /** Idle ticks between two glance checks: 3-4 seconds, deliberately unhurried. */
@@ -616,13 +629,17 @@ public final class CompanionManager {
     private final Set<UUID> erisTesters = new HashSet<>();
     /** Per-owner Eris session state: kills, potion cooldowns, and dialogue timing. */
     private final Map<UUID, ErisState> erisStates = new HashMap<>();
+    /** The support abilities of the newer companions, one set of bookkeeping per owner. */
+    private final SupportAbilities supportAbilities = new SupportAbilities();
+    /** The voices of the newer companions: Furina, Ei, Columbina, and Escoffier. */
+    private final CompanionDialogue dialogue = new CompanionDialogue();
     /**
-     * Mobs Eris recently hit, mapped to the owner who gets the kill credit.
+     * Mobs a companion recently hit, mapped to the companion that hit them.
      *
      * <p>A mannequin's final blow is invisible to the death event, so the damage is remembered
      * here and confirmed when the mob dies.</p>
      */
-    private final Map<UUID, UUID> erisDamageTracker = new HashMap<>();
+    private final Map<UUID, CompanionKey> killTracker = new HashMap<>();
     /**
      * Doors any companion currently holds open, shared across all companions so the second one
      * walking through a doorway doesn't fight the first over who closes it.
@@ -634,6 +651,9 @@ public final class CompanionManager {
         loadSavedModes();
         loadErisAccess();
         loadErisOwner();
+        // When a companion's support ability fires, she says her own assist line about it.
+        supportAbilities.onAbilityFired((owner, archetype, at, tick) ->
+                dialogue.onSupport(owner, archetype, at, tick));
     }
 
     /**
@@ -842,49 +862,105 @@ public final class CompanionManager {
     }
 
     /**
-     * Remembers that Eris damaged a mob, so the kill can be credited to her owner.
+     * Remembers that a companion damaged a mob, so the kill can be credited to her owner.
      *
      * <p>The killer of a mob is only ever a player, so a mannequin's final blow is not visible
-     * through {@code getKiller()}. The damage event is the reliable place to notice that Eris was
-     * the one who hit it; the death event then confirms it.</p>
+     * through {@code getKiller()}. The damage event is the reliable place to notice that a
+     * companion was the one who hit it; the death event then confirms it.</p>
      */
-    public void noteErisDamage(UUID mobId, UUID damagerId) {
+    public void noteCompanionDamage(UUID mobId, UUID damagerId) {
         for (Map.Entry<CompanionKey, UUID> entry : ownerToNpc.entrySet()) {
-            if ("eris".equals(entry.getKey().archetype()) && damagerId.equals(entry.getValue())) {
-                erisDamageTracker.put(mobId, entry.getKey().ownerId());
+            if (damagerId.equals(entry.getValue())) {
+                killTracker.put(mobId, entry.getKey());
                 return;
             }
         }
     }
 
-    /** Increment Eris's kill counter when a mob she struck dies. */
-    public void recordErisKill(UUID mobId) {
-        UUID ownerId = erisDamageTracker.remove(mobId);
-        if (ownerId == null) {
+    /**
+     * Remembers that a companion's thrown trident hit a mob, so the kill can be credited too.
+     *
+     * <p>A projectile is not a mannequin, so it never reaches the damage handler above. The
+     * trident carries a tag naming the companion who threw it, which is how the kill is
+     * credited to the right companion rather than to the owner who fired it.</p>
+     */
+    public void noteProjectileDamage(UUID mobId, String archetype) {
+        for (Map.Entry<CompanionKey, UUID> entry : ownerToNpc.entrySet()) {
+            if (entry.getKey().archetype().equalsIgnoreCase(archetype)) {
+                killTracker.put(mobId, entry.getKey());
+                return;
+            }
+        }
+    }
+
+    /**
+     * A mob died: the kill is credited to the companion that struck it, and she says so.
+     *
+     * <p>Eris counts her kills, because her Strength depends on them. The newer companions
+     * only have their kill line to say.</p>
+     */
+    public void recordCompanionKill(UUID mobId) {
+        CompanionKey key = killTracker.remove(mobId);
+        if (key == null) {
             return;
         }
-        Player owner = Bukkit.getPlayer(ownerId);
+        Player owner = Bukkit.getPlayer(key.ownerId());
         if (owner == null || !owner.isOnline()) {
             return;
         }
-        ErisState eris = erisState(owner.getUniqueId());
-        eris.killCount++;
-        String line = speakEris(owner, eris, ERIS_KILL_LINES, eris.lastKillLine,
-                ERIS_KILL_COOLDOWN_TICKS, eris.lastKillTick, false);
-        if (line != null) {
-            eris.lastKillTick = Bukkit.getCurrentTick();
-            eris.lastKillLine = line;
+        if ("eris".equals(key.archetype())) {
+            ErisState eris = erisState(owner.getUniqueId());
+            eris.killCount++;
+            String line = speakEris(owner, eris, ERIS_KILL_LINES, eris.lastKillLine,
+                    ERIS_KILL_COOLDOWN_TICKS, eris.lastKillTick, false);
+            if (line != null) {
+                eris.lastKillTick = Bukkit.getCurrentTick();
+                eris.lastKillLine = line;
+            }
+            if (eris.killCount >= 2 && !eris.strengthGranted) {
+                eris.strengthGranted = true;
+                owner.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,
+                        ERIS_STRENGTH_DURATION_TICKS, 0, true, false, true));
+            }
+            return;
         }
-        if (eris.killCount >= 2 && !eris.strengthGranted) {
-            eris.strengthGranted = true;
-            owner.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,
-                    ERIS_STRENGTH_DURATION_TICKS, 0, true, false, true));
-        }
+        Entity companion = getCompanion(owner.getUniqueId(), key.archetype());
+        dialogue.onKill(owner, key.archetype(),
+                companion == null ? owner.getLocation() : companion.getLocation(),
+                Bukkit.getCurrentTick());
     }
 
     /** Send Eris's deny line to any non-owner who tries to invoke her. */
     public void denyEris(Player player) {
         player.sendMessage(Component.text("[Eris] " + ERIS_DENY_LINE, NamedTextColor.RED));
+    }
+
+    /**
+     * Refuses a companion to a player who is not allowed to use her.
+     *
+     * <p>The newer companions say their own refusal; Yui and Sandrone fall back to the plain
+     * message, because they have no voice of their own in the plugin.</p>
+     */
+    public void denyCompanion(Player player, String archetype) {
+        if (CompanionDialogue.hasVoice(archetype)) {
+            dialogue.onDeny(player, archetype);
+            return;
+        }
+        player.sendMessage(Component.text("Yui dan Sandrone hanya untuk pemiliknya.",
+                NamedTextColor.RED));
+    }
+
+    /**
+     * Notes that the owner killed a mob, so Ei's strength can follow it.
+     *
+     * <p>Only Ei reacts to this: she grants Strength after the owner's first kill. The other
+     * companions have no ability that is tied to a kill.</p>
+     */
+    public void noteOwnerKill(Player owner) {
+        if (!owner.isOnline()) {
+            return;
+        }
+        supportAbilities.onOwnerKill(owner, "ei", Bukkit.getCurrentTick());
     }
 
     /** Returns Eris's permanent owner UUID, or null before she has been claimed. */
@@ -961,6 +1037,8 @@ public final class CompanionManager {
         // owner may receive its buffs.
         owner.addScoreboardTag(activeTag(kind));
         startFollowing(key, owner, npc, initialFormationYaw);
+        // The newer companions answer when they are called.
+        dialogue.onCall(owner, kind, npc.getLocation());
         plugin.getLogger().info(() -> "Spawned " + kind + " mannequin for " + owner.getName());
     }
 
@@ -1060,9 +1138,7 @@ public final class CompanionManager {
     private void applySkin(Mannequin npc, String archetype, String ownerName) {
         String url = plugin.skinUrl(archetype);
         Key packKey = plugin.packSkinKey(archetype);
-        PlayerTextures.SkinModel model = archetype.equals("yui") || archetype.equals("eris")
-                ? PlayerTextures.SkinModel.SLIM
-                : PlayerTextures.SkinModel.CLASSIC;
+        PlayerTextures.SkinModel model = plugin.skinModelFor(archetype);
 
         ResolvableProfile profile;
         try {
@@ -1082,6 +1158,10 @@ public final class CompanionManager {
         return switch (archetype) {
             case "yui" -> Component.text("Yui", NamedTextColor.LIGHT_PURPLE);
             case "eris" -> Component.text("Eris", NamedTextColor.RED);
+            case "furina" -> Component.text("Furina", NamedTextColor.AQUA);
+            case "ei" -> Component.text("Ei", NamedTextColor.GOLD);
+            case "columbina" -> Component.text("Columbina", NamedTextColor.LIGHT_PURPLE);
+            case "escoffier" -> Component.text("Escoffier", NamedTextColor.GRAY);
             default -> Component.text("Sandrone", NamedTextColor.AQUA);
         };
     }
@@ -1196,8 +1276,9 @@ public final class CompanionManager {
             return behind;
         }
 
-        // The side this companion naturally owns: Yui left, Sandrone right.
-        boolean naturalLeft = "yui".equalsIgnoreCase(state.archetype);
+        // The side this companion naturally owns: Yui left, Sandrone right, and the newer
+        // companions take the remaining sides of the group.
+        boolean naturalLeft = naturalSide(state.archetype) > 0.0;
         // Sticky: hold on to the current side while it still fits, so a cramped room does not
         // make the companion pace about. A side taken as a fallback does not become permanent —
         // the natural side is reclaimed as soon as there is room again.
@@ -1434,7 +1515,7 @@ public final class CompanionManager {
      * Whether the mob counts as hostile. Only the undead and the classic cave dwellers qualify;
      * animals, villagers and other peaceful creatures are never attacked.
      */
-    private static boolean isHostileMob(LivingEntity entity) {
+    static boolean isHostileMob(LivingEntity entity) {
         if (entity instanceof org.bukkit.entity.Monster) {
             return true;
         }
@@ -1594,6 +1675,21 @@ public final class CompanionManager {
      * standable.</p>
      */
     private static Location meleeSpot(Mannequin npc, LivingEntity target) {
+        return approachSpot(npc, target, ATTACK_APPROACH_DISTANCE);
+    }
+
+    /**
+     * A spot a given distance short of the target, on the side the companion is already on.
+     *
+     * <p>Stopping short rather than beyond the target is what makes the companion walk up to a
+     * mob instead of having to walk around it. When the distance itself cannot be stood on — the
+     * mob may be on a ledge — the mob's own block is used, which is always standable.</p>
+     *
+     * @param npc      the companion
+     * @param target   the mob being fought
+     * @param distance how far short of the mob to stand, in blocks
+     */
+    private static Location approachSpot(Mannequin npc, LivingEntity target, double distance) {
         Location targetLocation = target.getLocation();
         Location npcLocation = npc.getLocation();
         double dx = targetLocation.getX() - npcLocation.getX();
@@ -1601,17 +1697,63 @@ public final class CompanionManager {
         double length = Math.sqrt(dx * dx + dz * dz);
         if (length < 0.05) {
             // Overlapping the target: step aside so the swing has room to happen.
-            return targetLocation.clone().add(ATTACK_APPROACH_DISTANCE, 0, 0);
+            return targetLocation.clone().add(distance, 0, 0);
         }
         // Stop short of the target rather than beyond it, so the companion walks up to the mob
         // instead of having to walk around it.
-        double scale = ATTACK_APPROACH_DISTANCE / length;
+        double scale = distance / length;
         Location spot = new Location(targetLocation.getWorld(),
                 targetLocation.getX() - dx * scale,
                 targetLocation.getY(),
                 targetLocation.getZ() - dz * scale);
         if (!isFreeForCompanion(spot)) {
             // The spot hangs in the air or inside a block; the mob's own block always works.
+            return targetLocation.clone();
+        }
+        return spot;
+    }
+
+    /**
+     * The spot the companion walks to while it is fighting.
+     *
+     * <p>A melee companion walks up to the mob and stops just short of it. A companion that
+     * throws — Columbina and Escoffier — keeps its distance instead: it steps back towards the
+     * far side of the mob until it is about {@link #RANGED_KEEP_DISTANCE} blocks away, so the
+     * trident has room to fly and the companion is not standing in the mob's face.</p>
+     *
+     * @param npc    the companion
+     * @param state  the companion's state, which says which weapon it carries
+     * @param target the mob being fought
+     */
+    private static Location combatSpot(Mannequin npc, FollowState state, LivingEntity target) {
+        CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
+        if (weapon == null || !weapon.isRanged()) {
+            return meleeSpot(npc, target);
+        }
+        Location targetLocation = target.getLocation();
+        Location npcLocation = npc.getLocation();
+        double dx = targetLocation.getX() - npcLocation.getX();
+        double dz = targetLocation.getZ() - npcLocation.getZ();
+        double length = Math.sqrt(dx * dx + dz * dz);
+        // The distance the companion wants to keep: far enough for the trident to fly, close
+        // enough that the shot does not take forever to arrive.
+        double wanted = RANGED_KEEP_DISTANCE;
+        if (length < 0.05) {
+            // Standing on top of the mob: step back so the throw has somewhere to come from.
+            return targetLocation.clone().add(wanted, 0, 0);
+        }
+        if (length >= wanted) {
+            // Far away: walk in until the wanted distance is reached.
+            return approachSpot(npc, target, wanted);
+        }
+        // Too close: back away along the same line, so the companion never has to walk around
+        // the mob to reach its throwing distance.
+        double back = wanted - length;
+        Location spot = new Location(targetLocation.getWorld(),
+                npcLocation.getX() - dx / length * back,
+                npcLocation.getY(),
+                npcLocation.getZ() - dz / length * back);
+        if (!isFreeForCompanion(spot)) {
             return targetLocation.clone();
         }
         return spot;
@@ -1645,9 +1787,13 @@ public final class CompanionManager {
     }
 
     /**
-     * Swings at the target: the companion's arm animates like a player's, and the mob takes the
+     * Strikes at the target: the companion's arm animates like a player's, and the mob takes the
      * damage. A mob that had the companion as its target is released first, so it stops hitting
      * an immortal companion and looks for the owner again.
+     *
+     * <p>How the strike looks and where it comes from depends on the companion's weapon. A
+     * sword is swung at the mob, a spear is jabbed forward, and a trident is thrown from a
+     * distance.</p>
      */
     private void swingAtTarget(Mannequin npc, Player owner, LivingEntity target,
                                 FollowState state, long currentTick) {
@@ -1660,12 +1806,52 @@ public final class CompanionManager {
         }
         state.lastSwingTick = currentTick;
 
-        // The swing animation is a player's own, so the hit reads like a real melee attack.
-        npc.swingMainHand();
+        CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
+        if (weapon == null) {
+            weapon = new CompanionWeapons.Weapon(state.archetype, Material.IRON_SWORD,
+                    plugin.attackDamage(), CompanionWeapons.Style.SWING);
+        }
+
+        if (weapon.isRanged()) {
+            throwAtTarget(npc, owner, target, weapon);
+            return;
+        }
+
+        if (weapon.style() == CompanionWeapons.Style.JAB) {
+            // A jab is a thrust, not a sweep: the arm goes straight forward at the mob. Paper's
+            // STAB swing animation is exactly that motion, so the spear reads as a poke.
+            npc.swingHand(org.bukkit.inventory.EquipmentSlot.HAND,
+                    io.papermc.paper.datacomponent.item.SwingAnimation.swingAnimation()
+                            .type(io.papermc.paper.datacomponent.item.SwingAnimation.Animation.STAB)
+                            .duration(JAB_ANIMATION_TICKS)
+                            .build());
+        } else {
+            // The swing animation is a player's own, so the hit reads like a real melee attack.
+            npc.swingMainHand();
+        }
         // Take the mob's attention off the companion: an immortal target would otherwise keep
         // the mob busy forever instead of letting it return to the owner.
         releaseAggro(target, owner);
-        target.damage(plugin.attackDamage(), npc);
+        target.damage(weapon.damage(), npc);
+    }
+
+    /**
+     * Throws the companion's trident at the target.
+     *
+     * <p>The companion keeps its distance: the trident is launched at the mob and the damage
+     * comes from the projectile, not from a swing.</p>
+     */
+    private void throwAtTarget(Mannequin npc, Player owner, LivingEntity target,
+                               CompanionWeapons.Weapon weapon) {
+        releaseAggro(target, owner);
+        org.bukkit.entity.Trident thrown = RangedTridentAttack.launch(
+                npc, owner, target, RANGED_THROW_RANGE, RANGED_THROW_SPEED, weapon.damage(),
+                weapon.archetype());
+        if (thrown == null) {
+            // The shot was not possible — the target is out of range or in another world. Fall
+            // back to a plain strike so the companion is never left standing there.
+            target.damage(weapon.damage(), npc);
+        }
     }
 
     /**
@@ -1708,7 +1894,7 @@ public final class CompanionManager {
      * movement does not change it.</p>
      */
     private static Location spawnFormationSpot(Location ownerLocation, String archetype, float formationYaw) {
-        boolean wantLeft = "yui".equalsIgnoreCase(archetype);
+        boolean wantLeft = naturalSide(archetype) > 0.0;
         Location own = sideSpotAt(ownerLocation, formationYaw, wantLeft ? 1.0 : -1.0);
         if (isFreeForCompanion(own)) {
             return own;
@@ -1816,7 +2002,7 @@ public final class CompanionManager {
             // to hold and never leaves to chase the owner across the map.
             LivingEntity attackTarget = resolveAttackTarget(npc, owner, state, currentTick);
             if (attackTarget != null) {
-                targetSpot = meleeSpot(npc, attackTarget);
+                targetSpot = combatSpot(npc, state, attackTarget);
             }
             // A waiting companion is on a leash: it fights what comes inside the ground it holds,
             // but it does not follow a mob out of that ground. Once the mob pulls it too far from
@@ -1830,15 +2016,24 @@ public final class CompanionManager {
                     targetSpot = waitSpot(npc, state, currentTick);
                 }
             }
-            // The sword is only drawn while there is something to fight, and put away again once
+            // The weapon is only drawn while there is something to fight, and put away again once
             // the fight is over.
-            updateSword(npc, attackTarget != null);
+            updateWeapon(npc, state.archetype, attackTarget != null);
             // Defensive markers show which hostile mobs are being watched.
             updateDangerMarkers(npc, owner, state, currentTick);
             // Eris is a support fighter: while she is fighting next to her owner she keeps
             // refreshing Speed on them, and she talks in her own voice.
             updateErisBehaviour(owner, state, attackTarget != null, attackTarget == null,
                     currentTick);
+            // The newer companions each have a support ability of their own, keyed to what is
+            // happening to the owner rather than to the fight in front of them.
+            supportAbilities.tick(owner, state.archetype, npc);
+            // The newer companions also have a voice of their own: something to say while they
+            // are idle, and a remark once the support ability has been used.
+            dialogue.tick(owner, state.archetype, npc.getLocation(),
+                    attackTarget == null && !waitMode, currentTick);
+            dialogue.onFollowUp(owner, state.archetype, npc.getLocation(),
+                    attackTarget != null, currentTick);
             double targetDx = targetSpot.getX() - npcLocation.getX();
             double targetDz = targetSpot.getZ() - npcLocation.getZ();
             double targetDistance = Math.sqrt(targetDx * targetDx + targetDz * targetDz);
@@ -1854,7 +2049,16 @@ public final class CompanionManager {
                 double reachDz = targetPosition.getZ() - npcLocation.getZ();
                 combatDistance = Math.sqrt(reachDx * reachDx + reachDz * reachDz);
             }
-            double arriveAt = attackTarget == null ? standStill : ATTACK_STOP_DISTANCE;
+            // The weapon in hand decides how the fight is fought. A melee companion has to get
+            // within arm's length of the mob before it can strike; a companion that throws
+            // strikes from further away, so its own reach is the throw's range.
+            CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
+            boolean ranged = weapon != null && weapon.isRanged();
+            // A companion that throws its weapon settles at the distance it wants to keep, not
+            // at the melee stop distance: it fights from there.
+            double arriveAt = attackTarget == null
+                    ? standStill
+                    : (ranged ? RANGED_KEEP_DISTANCE : ATTACK_STOP_DISTANCE);
 
             // Emergency rescue on a vertical separation. When the owner stands on safe ground and
             // the companion is far below, waiting for the usual 24-block radius is wrong: the
@@ -1891,9 +2095,10 @@ public final class CompanionManager {
             // stop distance, but a swing is allowed at the full vanilla reach — otherwise a
             // companion settled a whisker outside reach would stand there holding its sword and
             // never strike. Outside combat the normal formation distance decides.
-            boolean inReach = attackTarget != null && combatDistance <= ATTACK_REACH;
+            boolean inReach = attackTarget != null
+                    && combatDistance <= (ranged ? RANGED_THROW_RANGE : ATTACK_REACH);
             if (inReach) {
-                // In reach: face the mob and swing on cooldown. The head stays on the target
+                // In reach: face the mob and strike on cooldown. The head stays on the target
                 // whether the companion is still closing in or already standing its ground.
                 float facing = yawToward(npcLocation, attackTarget.getLocation());
                 state.lastWalkingYaw = facing;
@@ -1918,7 +2123,7 @@ public final class CompanionManager {
                     // A waiting companion keeps watching its owner even though it stays put.
                     applyGaze(npc, owner, state, state.lastWalkingYaw, true, true);
                 } else if (inReach) {
-                    // Standing its ground within reach: this is where the swing happens.
+                    // Standing its ground within reach: this is where the strike happens.
                     swingAtTarget(npc, owner, attackTarget, state, currentTick);
                 }
                 return;
@@ -3122,24 +3327,15 @@ public final class CompanionManager {
     }
 
     /**
-     * Shows or hides the companion's sword, following what it is doing.
+     * Puts the companion's weapon into its hand, or takes it away.
      *
-     * <p>The sword is only drawn when the companion actually has a mob to fight. A companion
+     * <p>The weapon is only drawn when the companion actually has a mob to fight. A companion
      * that is following the owner, idling, or waiting at its spot keeps its hands empty; it
-     * draws the sword when it decides to attack and puts it away once the fight is over.</p>
+     * draws its weapon when it decides to attack and puts it away once the fight is over.</p>
      */
-    private static void updateSword(Mannequin npc, boolean fighting) {
-        org.bukkit.inventory.EntityEquipment equipment = npc.getEquipment();
-        if (equipment == null) {
-            return;
-        }
-        boolean armed = equipment.getItemInMainHand().getType() != Material.AIR;
-        if (armed == fighting) {
-            return;
-        }
-        equipment.setItemInMainHand(fighting
-                ? new org.bukkit.inventory.ItemStack(Material.IRON_SWORD)
-                : null);
+    private static void updateWeapon(Mannequin npc, String archetype, boolean fighting) {
+        CompanionWeapons.Weapon weapon = fighting ? CompanionWeapons.of(archetype) : null;
+        CompanionWeapons.equip(npc, weapon);
     }
 
     /** Teleports the companion to its mode-specific target, closing its doors and resetting route state. */
@@ -3346,10 +3542,28 @@ public final class CompanionManager {
      * The companions the shared {@code /ikut}, {@code /kesini} and {@code /tunggu}
      * commands may touch.
      *
-     * <p>Eris is deliberately excluded. She is a standalone companion with her own commands, so
-     * the pair-wide commands must never reach her.</p>
+     * <p>These are Arif's own companions — the pair plus the newer ones. Eris is deliberately
+     * excluded. She is a standalone companion with her own commands, so the pair-wide commands
+     * must never reach her.</p>
      */
-    private static final List<String> PAIRED_ARCHETYPES = List.of("yui", "sandrone");
+    private static final List<String> PAIRED_ARCHETYPES =
+            List.of("yui", "sandrone", "furina", "ei", "columbina", "escoffier");
+
+    /**
+     * The side of the owner a companion naturally stands on.
+     *
+     * <p>Yui holds the left, Sandrone the right. The newer companions take the other sides in
+     * turn, so Arif's group spreads out instead of six of them fighting for the same spot: Furina
+     * is left-front, Ei right-front, Columbina left-back, and Escoffier right-back.</p>
+     *
+     * @return {@code +1} for the owner's left, {@code -1} for the owner's right
+     */
+    private static double naturalSide(String archetype) {
+        return switch (archetype.toLowerCase(Locale.ROOT)) {
+            case "yui", "furina", "columbina" -> 1.0;
+            default -> -1.0;
+        };
+    }
 
     /**
      * Turns the owner's companions to CLOSE mode, which remains until /ikut is used.
@@ -3420,6 +3634,12 @@ public final class CompanionManager {
             state.lastProgressPosition = null;
             state.sideStepAttempts = 0;
             changed++;
+            // A companion that was told to wait says so.
+            if (mode == FollowMode.WAIT) {
+                Entity npc = getCompanion(owner.getUniqueId(), key.archetype());
+                dialogue.onWait(owner, key.archetype(),
+                        npc == null ? owner.getLocation() : npc.getLocation());
+            }
         }
         if (changed > 0) {
             saveSavedModes();

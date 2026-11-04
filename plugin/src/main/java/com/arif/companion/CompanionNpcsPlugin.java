@@ -15,6 +15,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.profile.PlayerTextures;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -29,9 +30,6 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private CompanionManager manager;
     private CompanionListener listener;
     private PackHttpServer packServer;
-    private String yuiSkinUrl;
-    private String sandroneSkinUrl;
-    private String erisSkinUrl;
     private double comfortDistance;
     private double closeDistance;
     private int teleportDistance;
@@ -110,6 +108,24 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         return erisTesters;
     }
 
+    /**
+     * The companions the shared group commands may address.
+     *
+     * <p>These are Arif's own companions: the original pair plus the four newer ones. Eris has
+     * her own commands and is deliberately not in this list.</p>
+     */
+    private static final List<String> GROUP_TARGETS =
+            List.of("yui", "sandrone", "furina", "ei", "columbina", "escoffier", "semua");
+
+    /**
+     * Whether the given name addresses a member of the shared companion group.
+     *
+     * @param target the name the player typed
+     */
+    private static boolean isGroupTarget(String target) {
+        return GROUP_TARGETS.contains(target.toLowerCase(Locale.ROOT));
+    }
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -122,6 +138,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
         registerCommand("yui-npc", new CompanionCommand("yui"));
         registerCommand("sandrone-npc", new CompanionCommand("sandrone"));
+        registerCommand("furina-npc", new CompanionCommand("furina"));
+        registerCommand("ei-npc", new CompanionCommand("ei"));
+        registerCommand("columbina-npc", new CompanionCommand("columbina"));
+        registerCommand("escoffier-npc", new CompanionCommand("escoffier"));
         registerCommand("kesini", new ModeCommand(CompanionManager.FollowMode.CLOSE, "Kesini"));
         registerCommand("ikut", new ModeCommand(CompanionManager.FollowMode.FOLLOW, "Ikut"));
         registerCommand("tunggu", new WaitCommand());
@@ -222,9 +242,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 erisTesters.add(tester);
             }
         }
-        yuiSkinUrl = config.getString("yui.skin-url", "");
-        sandroneSkinUrl = config.getString("sandrone.skin-url", "");
-        erisSkinUrl = config.getString("eris.skin-url", "");
+        // Skin URLs for the other archetypes are read straight from the config when they are
+        // needed, so a new companion needs no field of its own here.
         // Standing distance: how far away a companion settles while the owner is idle.
         comfortDistance = config.getDouble("comfort-distance", 3.0);
         // Close distance: how near they come when the owner calls them with /kesini.
@@ -312,11 +331,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     }
 
     String skinUrl(String archetype) {
-        return switch (archetype) {
-            case "yui" -> yuiSkinUrl;
-            case "eris" -> erisSkinUrl;
-            default -> sandroneSkinUrl;
-        };
+        return getConfig().getString(archetype.toLowerCase(Locale.ROOT) + ".skin-url", "");
     }
 
     int followDistance() {
@@ -395,25 +410,59 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
      * missing key would render as the missing-texture pattern on the client.</p>
      */
     net.kyori.adventure.key.Key packSkinKey(String archetype) {
+        String texture = textureFileFor(archetype);
+        if (texture == null) {
+            return null;
+        }
         File serverRoot = getDataFolder().getParentFile().getParentFile();
-        File png = new File(serverRoot, "resource-pack/assets/companion/textures/" + archetype + ".png");
+        File png = new File(serverRoot, "resource-pack/assets/companion/textures/" + texture + ".png");
         if (!png.isFile()) {
             getLogger().fine("No bundled skin at " + png.getPath() + "; " + archetype
                     + " uses default/URL skin.");
             return null;
         }
-        return net.kyori.adventure.key.Key.key("companion", archetype);
+        return net.kyori.adventure.key.Key.key("companion", texture);
+    }
+
+    /**
+     * The texture file name an archetype uses in the resource pack.
+     *
+     * <p>Most archetypes use a file named after themselves. Sandrone has a second, mirrored
+     * variant that replaces the original, so the mapping is explicit rather than derived.</p>
+     *
+     * @return the file name without its extension, or {@code null} when the archetype is unknown
+     */
+    private String textureFileFor(String archetype) {
+        if (archetype == null) {
+            return null;
+        }
+        return switch (archetype.toLowerCase(Locale.ROOT)) {
+            case "sandrone" -> "sandrone mirrored analysis";
+            case "yui", "eris", "furina", "ei", "columbina", "escoffier" ->
+                    archetype.toLowerCase(Locale.ROOT);
+            default -> null;
+        };
+    }
+
+    /**
+     * The skin model (slim or classic) an archetype's texture was drawn for.
+     *
+     * <p>A slim skin is drawn with three-pixel-wide arms; a classic skin with four. Using the
+     * wrong one makes the arms render at the wrong width on the client.</p>
+     */
+    PlayerTextures.SkinModel skinModelFor(String archetype) {
+        return switch (archetype == null ? "" : archetype.toLowerCase(Locale.ROOT)) {
+            case "yui", "eris" -> PlayerTextures.SkinModel.SLIM;
+            default -> PlayerTextures.SkinModel.CLASSIC;
+        };
     }
 
     void setSkinUrl(String archetype, String url) {
         String safeUrl = url == null ? "" : url.trim();
-        switch (archetype) {
-            case "yui" -> yuiSkinUrl = safeUrl;
-            case "eris" -> erisSkinUrl = safeUrl;
-            default -> sandroneSkinUrl = safeUrl;
-        }
-        getConfig().set(archetype + ".skin-url", safeUrl);
+        getConfig().set(archetype.toLowerCase(Locale.ROOT) + ".skin-url", safeUrl);
         saveConfig();
+        reloadConfig();
+        readConfig();
     }
 
     private void runSelfTest() {
@@ -485,8 +534,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 return true;
             }
             if (!mayUseYuiAndSandrone(player.getUniqueId())) {
-                player.sendMessage(Component.text("Yui dan Sandrone hanya untuk pemiliknya.",
-                        NamedTextColor.RED));
+                // The newer companions have a deny line of their own; the pair does not.
+                manager.denyCompanion(player, archetype);
                 return true;
             }
 
@@ -546,14 +595,14 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 return true;
             }
             String target = args.length == 0 ? "semua" : args[0].toLowerCase(Locale.ROOT);
-            if (!target.equals("yui") && !target.equals("sandrone") && !target.equals("semua")) {
+            if (!isGroupTarget(target)) {
                 if (target.equals("eris")) {
                     player.sendMessage(Component.text("Eris punya command sendiri: /eris "
                             + label.toLowerCase(Locale.ROOT), NamedTextColor.YELLOW));
                     return true;
                 }
                 player.sendMessage(Component.text("Pilih siapa: /" + commandLabel
-                        + " [yui|sandrone|semua]", NamedTextColor.YELLOW));
+                        + " [yui|sandrone|furina|ei|columbina|escoffier|semua]", NamedTextColor.YELLOW));
                 return true;
             }
             if (!mayUseYuiAndSandrone(player.getUniqueId())) {
@@ -576,7 +625,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         @Override
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
-                List<String> options = new ArrayList<>(List.of("yui", "sandrone", "semua"));
+                List<String> options = new ArrayList<>(GROUP_TARGETS);
                 String prefix = args[0].toLowerCase(Locale.ROOT);
                 options.removeIf(option -> !option.startsWith(prefix));
                 return options;
@@ -600,14 +649,14 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 return true;
             }
             String target = args.length == 0 ? "semua" : args[0].toLowerCase(Locale.ROOT);
-            if (!target.equals("yui") && !target.equals("sandrone") && !target.equals("semua")) {
+            if (!isGroupTarget(target)) {
                 if (target.equals("eris")) {
                     player.sendMessage(Component.text("Eris punya command sendiri: /eris tunggu",
                             NamedTextColor.YELLOW));
                     return true;
                 }
                 player.sendMessage(Component.text("Pilih siapa: /" + commandLabel
-                        + " [yui|sandrone|semua]", NamedTextColor.YELLOW));
+                        + " [yui|sandrone|furina|ei|columbina|escoffier|semua]", NamedTextColor.YELLOW));
                 return true;
             }
             if (!mayUseYuiAndSandrone(player.getUniqueId())) {
@@ -629,7 +678,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         @Override
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
-                List<String> options = new ArrayList<>(List.of("yui", "sandrone", "semua"));
+                List<String> options = new ArrayList<>(GROUP_TARGETS);
                 String prefix = args[0].toLowerCase(Locale.ROOT);
                 options.removeIf(option -> !option.startsWith(prefix));
                 return options;
@@ -776,10 +825,26 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     }
 
     private static NamedTextColor colorFor(String archetype) {
-        return archetype.equals("yui") ? NamedTextColor.LIGHT_PURPLE : NamedTextColor.AQUA;
+        return switch (archetype.toLowerCase(Locale.ROOT)) {
+            case "yui" -> NamedTextColor.LIGHT_PURPLE;
+            case "eris" -> NamedTextColor.RED;
+            case "furina" -> NamedTextColor.AQUA;
+            case "ei" -> NamedTextColor.GOLD;
+            case "columbina" -> NamedTextColor.LIGHT_PURPLE;
+            case "escoffier" -> NamedTextColor.GRAY;
+            default -> NamedTextColor.AQUA;
+        };
     }
 
     private static String labelFor(String archetype) {
-        return archetype.equals("yui") ? "Yui" : "Sandrone";
+        return switch (archetype.toLowerCase(Locale.ROOT)) {
+            case "yui" -> "Yui";
+            case "eris" -> "Eris";
+            case "furina" -> "Furina";
+            case "ei" -> "Ei";
+            case "columbina" -> "Columbina";
+            case "escoffier" -> "Escoffier";
+            default -> "Sandrone";
+        };
     }
 }

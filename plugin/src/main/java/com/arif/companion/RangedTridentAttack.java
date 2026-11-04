@@ -30,6 +30,9 @@ final class RangedTridentAttack {
     /** Scoreboard tag identifying a companion's thrown trident. */
     static final String PROJECTILE_TAG = "companion_ranged_trident";
 
+    /** Prefix of the tag that names the companion who threw the trident. */
+    static final String OWNER_TAG_PREFIX = "companion_thrower_";
+
     /** Vanilla arrow/trident air drag, applied to the velocity every tick. */
     private static final double AIR_DRAG = 0.99;
 
@@ -58,6 +61,23 @@ final class RangedTridentAttack {
      */
     static Trident launch(Mannequin companion, Player owner, LivingEntity target,
                           double range, double speed, double damage) {
+        return launch(companion, owner, target, range, speed, damage, null);
+    }
+
+    /**
+     * Launches a trident toward a living target, marking it as the given companion's throw.
+     *
+     * @param companion mannequin that plays the throw animation
+     * @param owner player credited as the projectile's shooter, so the damage counts as his own
+     * @param target the mob to hit
+     * @param range maximum horizontal throw distance; a target beyond it is refused
+     * @param speed initial projectile speed in blocks per tick
+     * @param damage projectile base damage
+     * @param archetype the companion that threw it, used to credit the kill; may be null
+     * @return the launched trident, or {@code null} when the shot is not possible
+     */
+    static Trident launch(Mannequin companion, Player owner, LivingEntity target,
+                          double range, double speed, double damage, String archetype) {
         if (companion == null || owner == null || target == null
                 || !target.isValid() || target.isDead()
                 || companion.getWorld() != target.getWorld()
@@ -99,6 +119,11 @@ final class RangedTridentAttack {
             spawned.setVelocity(velocity);
         });
         projectile.addScoreboardTag(PROJECTILE_TAG);
+        if (archetype != null && !archetype.isBlank()) {
+            // The shooter of the trident is the owner, so the projectile alone cannot say which
+            // companion threw it. This tag carries that answer back to the kill.
+            projectile.addScoreboardTag(OWNER_TAG_PREFIX + archetype.toLowerCase(java.util.Locale.ROOT));
+        }
         return projectile;
     }
 

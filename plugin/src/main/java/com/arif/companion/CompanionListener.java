@@ -102,14 +102,14 @@ public final class CompanionListener implements Listener {
         plugin.getManager().openErisPouch(player);
     }
 
-    /** Remembers which mob Eris hit, so the kill can be credited to her owner. */
+    /** Remembers which mob a companion hit, so the kill can be credited to her owner. */
     @EventHandler
     public void onEntityDamage(EntityDamageByEntityEvent event) {
         if (!(event.getDamager() instanceof Mannequin mannequin)
-                || !mannequin.getScoreboardTags().contains("companion_eris")) {
+                || !mannequin.getScoreboardTags().contains(CompanionManager.TAG)) {
             return;
         }
-        plugin.getManager().noteErisDamage(event.getEntity().getUniqueId(),
+        plugin.getManager().noteCompanionDamage(event.getEntity().getUniqueId(),
                 mannequin.getUniqueId());
     }
 
@@ -117,7 +117,8 @@ public final class CompanionListener implements Listener {
      * Handles a trident a companion threw.
      *
      * <p>The trident is fired by the owner, so its damage is already credited to him. A mob that
-     * was coming for the companion is handed back to the owner.</p>
+     * was coming for the companion is handed back to the owner, and the companion that threw it
+     * gets the kill credit for the line she says about it.</p>
      */
     @EventHandler
     public void onTridentHit(EntityDamageByEntityEvent event) {
@@ -128,6 +129,16 @@ public final class CompanionListener implements Listener {
         Entity hit = event.getEntity();
         if (hit instanceof LivingEntity living) {
             plugin.getManager().releaseProjectileAggro(living, trident);
+            String thrower = null;
+            for (String tag : trident.getScoreboardTags()) {
+                if (tag.startsWith(RangedTridentAttack.OWNER_TAG_PREFIX)) {
+                    thrower = tag.substring(RangedTridentAttack.OWNER_TAG_PREFIX.length());
+                    break;
+                }
+            }
+            if (thrower != null) {
+                plugin.getManager().noteProjectileDamage(living.getUniqueId(), thrower);
+            }
         }
     }
 
@@ -141,10 +152,14 @@ public final class CompanionListener implements Listener {
         trident.remove();
     }
 
-    /** Counts a mob killed by Eris, which is what unlocks her Strength I. */
+    /** Counts a mob killed by a companion, which is what unlocks Eris's Strength I. */
     @EventHandler
     public void onEntityDeath(EntityDeathEvent event) {
-        plugin.getManager().recordErisKill(event.getEntity().getUniqueId());
+        plugin.getManager().recordCompanionKill(event.getEntity().getUniqueId());
+        // Ei's strength follows the owner's own kills, not the companion's.
+        if (event.getEntity().getKiller() != null) {
+            plugin.getManager().noteOwnerKill(event.getEntity().getKiller());
+        }
     }
 
     /** Saves Eris's pouch when its inventory closes. */

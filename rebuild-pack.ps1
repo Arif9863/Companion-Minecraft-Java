@@ -21,7 +21,11 @@
 #  POLA NAMA FILE (harus ikut):
 #    yui_<aksi>_<nomor>.ogg      contoh: yui_idle_09.ogg
 #    sandrone_<aksi>_<nomor>.ogg  contoh: sandrone_kill_07.ogg
-#  <aksi> yang sudah ada: on, deny, heal, followup, regen, kill, idle
+#    furina_<aksi>_<nomor>.ogg    contoh: furina_idle_03.ogg
+#    ei_<aksi>_<nomor>.ogg        contoh: ei_kill_01.ogg
+#    columbina_<aksi>_<nomor>.ogg contoh: columbina_idle_05.ogg
+#    escoffier_<aksi>_<nomor>.ogg contoh: escoffier_kill_02.ogg
+#  <aksi> yang sudah ada: on, deny, heal, followup, regen, kill, idle, assist, off
 #  Event di sounds.json dibuat dari nama file:
 #    yui_idle_09.ogg  ->  event "yui.idle_09"
 #    yui_on_01.ogg    ->  event "yui.on"
@@ -92,7 +96,7 @@ try {
 
     foreach($f in ($packOgg | Sort-Object Name)){
         $name = [IO.Path]::GetFileNameWithoutExtension($f.Name)
-        if($name -notmatch '^(yui|sandrone)_([a-z]+)(_(\d+))?$'){
+        if($name -notmatch '^(yui|sandrone|furina|ei|columbina|escoffier)_([a-z]+)(_(\d+))?$'){
             Warn ("nama tidak dikenal polanya, dilewati: " + $f.Name)
             $unmatched.Add($f.Name)
             continue
@@ -102,7 +106,9 @@ try {
         $num  = $Matches[4]
 
         # yui_idle_09 -> yui.idle_09 ; yui_on_01 -> yui.on (yang "_01" hanya penomoran file)
-        if($num -and $act -in @('on','deny','heal','followup','regen')){
+        # Kategori yang hanya punya satu baris dialog (on, deny, heal, followup, regen, off)
+        # memakai event tanpa nomor; sisanya bernomor per baris dialog.
+        if($num -and $act -in @('on','deny','heal','followup','regen','off')){
             $ev = "$char.$act"
         } elseif($num){
             $ev = "$char.$act" + "_$num"
