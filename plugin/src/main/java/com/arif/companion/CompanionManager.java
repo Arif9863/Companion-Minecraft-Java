@@ -661,6 +661,32 @@ public final class CompanionManager {
         // When a companion's support ability fires, she says her own assist line about it.
         supportAbilities.onAbilityFired((owner, archetype, at, tick) ->
                 dialogue.onSupport(owner, archetype, at, tick));
+        supportAbilities.bindLegacySupport(new SupportAbilities.LegacySupport() {
+            @Override
+            public void yuiHeal(Player owner, Location at) {
+                dialogue.announceYuiHeal(owner, at);
+            }
+
+            @Override
+            public void sandroneAbsorption(Player owner, Location at) {
+                dialogue.announceSandroneAbsorption(owner, at);
+            }
+
+            @Override
+            public void followUp(Player owner, String archetype, Location at) {
+                dialogue.playScheduledFollowUp(owner, archetype, at);
+            }
+        });
+        Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            long tick = Bukkit.getCurrentTick();
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                if (!hasAnyGroupCompanion(player)) {
+                    continue;
+                }
+                supportAbilities.tickScheduled(player, tick);
+                dialogue.playIdleTurn(player, tick, archetype -> idleSpeechLocation(player, archetype));
+            }
+        }, 20L, 20L);
     }
 
     /**
@@ -951,10 +977,7 @@ public final class CompanionManager {
     public void denyCompanion(Player player, String archetype) {
         if (CompanionDialogue.hasVoice(archetype)) {
             dialogue.onDeny(player, archetype);
-            return;
         }
-        player.sendMessage(Component.text("Yui dan Sandrone hanya untuk pemiliknya.",
-                NamedTextColor.RED));
     }
 
     /**
@@ -963,11 +986,25 @@ public final class CompanionManager {
      * <p>Only Ei reacts to this: she grants Strength after the owner's first kill. The other
      * companions have no ability that is tied to a kill.</p>
      */
-    public void noteOwnerKill(Player owner) {
+    public void noteOwnerKill(Player owner, LivingEntity victim) {
         if (!owner.isOnline()) {
             return;
         }
-        supportAbilities.onOwnerKill(owner, "ei", Bukkit.getCurrentTick());
+        long tick = Bukkit.getCurrentTick();
+        supportAbilities.onOwnerKill(owner, "ei", tick);
+        if (victim != null && isOwnerKillVoiceVictim(victim)) {
+            dialogue.onOwnerKill(owner, tick);
+        }
+    }
+
+    private static boolean isOwnerKillVoiceVictim(LivingEntity victim) {
+        if (victim instanceof Player || victim instanceof org.bukkit.entity.ArmorStand) {
+            return false;
+        }
+        if (victim.getScoreboardTags().contains(TAG)) {
+            return false;
+        }
+        return isHostileMob(victim);
     }
 
     /** Returns Eris's permanent owner UUID, or null before she has been claimed. */
@@ -2128,10 +2165,6 @@ public final class CompanionManager {
             // The newer companions each have a support ability of their own, keyed to what is
             // happening to the owner rather than to the fight in front of them.
             supportAbilities.tick(owner, state.archetype, npc);
-            // The newer companions also have a voice of their own: something to say while they
-            // are idle, and a remark once the support ability has been used.
-            dialogue.tick(owner, state.archetype, npc.getLocation(),
-                    attackTarget == null && !waitMode, currentTick);
             dialogue.onFollowUp(owner, state.archetype, npc.getLocation(),
                     attackTarget != null, currentTick);
             double targetDx = targetSpot.getX() - npcLocation.getX();
@@ -3544,7 +3577,7 @@ public final class CompanionManager {
      * open it.</p>
      */
     private static final List<String> POUCH_ARCHETYPES =
-            List.of("furina", "ei", "columbina", "escoffier");
+            List.of("yui", "sandrone", "furina", "ei", "columbina", "escoffier");
 
     /** Whether this archetype is one of Arif's companions that carries a pouch. */
     public static boolean hasPouch(String archetype) {
@@ -3768,6 +3801,27 @@ public final class CompanionManager {
      */
     public static List<String> pairedArchetypes() {
         return PAIRED_ARCHETYPES;
+    }
+
+    private boolean hasAnyGroupCompanion(Player owner) {
+        for (String archetype : PAIRED_ARCHETYPES) {
+            if (owner.getScoreboardTags().contains(activeTag(archetype))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Location idleSpeechLocation(Player owner, String archetype) {
+        if (!owner.getScoreboardTags().contains(activeTag(archetype))) {
+            return null;
+        }
+        FollowState state = followStates.get(new CompanionKey(owner.getUniqueId(), archetype));
+        if (state == null || state.attackTarget != null || state.mode == FollowMode.WAIT) {
+            return null;
+        }
+        Entity npc = getCompanion(owner.getUniqueId(), archetype);
+        return npc == null ? null : npc.getLocation();
     }
 
     /**

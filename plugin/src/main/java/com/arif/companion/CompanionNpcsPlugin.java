@@ -135,6 +135,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         reloadConfig();
         readConfig();
         manager = new CompanionManager(this);
+        File serverRoot = getDataFolder().getParentFile().getParentFile();
+        SkriptPouchMigrator.migrateIfPresent(this, serverRoot);
 
         registerCommand("yui-npc", new CompanionCommand("yui"));
         registerCommand("sandrone-npc", new CompanionCommand("sandrone"));

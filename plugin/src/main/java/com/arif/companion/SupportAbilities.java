@@ -1,6 +1,9 @@
 package com.arif.companion;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.Sound;
+import org.bukkit.attribute.Attribute;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
@@ -24,6 +27,8 @@ import java.util.UUID;
  *   <li><b>Ei</b> — grants Strength after the owner takes their first kill.</li>
  *   <li><b>Columbina</b> — grants Swiftness while a hostile mob is targeting the owner.</li>
  *   <li><b>Escoffier</b> — slows the hostile mobs that are targeting the owner.</li>
+ *   <li><b>Yui</b> — heals the owner slowly while hurt.</li>
+ *   <li><b>Sandrone</b> — grants Absorption on a fixed interval.</li>
  * </ul>
  *
  * <p>Every ability has its own duration and cooldown, so a companion does not spam its effect.
@@ -54,6 +59,17 @@ final class SupportAbilities {
     /** Escoffier: 5 seconds between two passes over the threatening mobs. */
     private static final long ESCOFFIER_COOLDOWN_TICKS = 100L;
 
+    /** Yui: heal 1 heart every 10 seconds while the owner is hurt. */
+    private static final long YUI_HEAL_INTERVAL_TICKS = 200L;
+    /** Sandrone: Absorption III every 45 seconds. */
+    private static final long SANDRONE_ABSORB_INTERVAL_TICKS = 900L;
+    private static final int SANDRONE_ABSORB_DURATION_TICKS = 1200;
+    private static final int SANDRONE_ABSORB_AMPLIFIER = 2;
+    /** Sandrone: at most one absorption voice line per minute. */
+    private static final long SANDRONE_VOICE_COOLDOWN_TICKS = 1200L;
+    private static final int MESSAGE_EVERY = 2;
+    private static final int FOLLOWUP_EVERY = 3;
+    private static final long FOLLOWUP_DELAY_TICKS = 100L;
     /** How close a hostile has to be to count as a threat to the owner. */
     private static final double THREAT_RADIUS = 16.0;
 
@@ -71,6 +87,39 @@ final class SupportAbilities {
     }
 
     private final Map<String, State> states = new HashMap<>();
+
+    private static final class YuiSession {
+        private long nextHealTick = Long.MIN_VALUE;
+        private int messageCounter;
+        private int followCounter;
+        private long followAt = Long.MIN_VALUE;
+    }
+
+    private static final class SandroneSession {
+        private long nextAbsorbTick = Long.MIN_VALUE;
+        private int messageCounter;
+        private int followCounter;
+        private long lastVoiceTick = Long.MIN_VALUE;
+        private long followAt = Long.MIN_VALUE;
+    }
+
+    private final Map<UUID, YuiSession> yuiSessions = new HashMap<>();
+    private final Map<UUID, SandroneSession> sandSessions = new HashMap<>();
+
+    /** Yui/Sandrone presentation hooks wired from {@link CompanionDialogue}. */
+    interface LegacySupport {
+        void yuiHeal(Player owner, Location at);
+
+        void sandroneAbsorption(Player owner, Location at);
+
+        void followUp(Player owner, String archetype, Location at);
+    }
+
+    private LegacySupport legacySupport;
+
+    void bindLegacySupport(LegacySupport legacySupport) {
+        this.legacySupport = legacySupport;
+    }
 
     private static String key(Player owner, String archetype) {
         return owner.getUniqueId() + ":" + archetype;
@@ -94,6 +143,14 @@ final class SupportAbilities {
             case "ei" -> tickEi(owner, now);
             case "columbina" -> tickColumbina(owner, now);
             case "escoffier" -> tickEscoffier(owner, now);
+            case "yui" -> {
+                tickYui(owner, npc, now);
+                yield false;
+            }
+            case "sandrone" -> {
+                tickSandrone(owner, npc, now);
+                yield false;
+            }
             default -> {
                 // The other companions have no support ability of their own.
                 yield false;
@@ -296,8 +353,99 @@ final class SupportAbilities {
         return result;
     }
 
+    /** Runs Yui/Sandrone follow-up timers once per second per owner. */
+    void tickScheduled(Player owner, long now) {
+        if (owner == null || !owner.isOnline()) {
+            return;
+        }
+        UUID id = owner.getUniqueId();
+        YuiSession yui = yuiSessions.get(id);
+        if (yui != null && yui.followAt != Long.MIN_VALUE && now >= yui.followAt) {
+            yui.followAt = Long.MIN_VALUE;
+            if (legacySupport != null) {
+                legacySupport.followUp(owner, "yui", null);
+            }
+        }
+        SandroneSession sand = sandSessions.get(id);
+        if (sand != null && sand.followAt != Long.MIN_VALUE && now >= sand.followAt) {
+            sand.followAt = Long.MIN_VALUE;
+            if (legacySupport != null) {
+                legacySupport.followUp(owner, "sandrone", null);
+            }
+        }
+    }
+
+    private void tickYui(Player owner, Mannequin npc, long now) {
+        if (!owner.getScoreboardTags().contains(CompanionManager.activeTag("yui"))) {
+            return;
+        }
+        YuiSession session = yuiSessions.computeIfAbsent(owner.getUniqueId(), ignored -> new YuiSession());
+        if (session.nextHealTick == Long.MIN_VALUE) {
+            session.nextHealTick = now + YUI_HEAL_INTERVAL_TICKS;
+            return;
+        }
+        if (now < session.nextHealTick || owner.isDead()) {
+            return;
+        }
+        session.nextHealTick = now + YUI_HEAL_INTERVAL_TICKS;
+        double max = owner.getAttribute(Attribute.MAX_HEALTH).getValue();
+        if (owner.getHealth() >= max) {
+            return;
+        }
+        owner.setHealth(Math.min(max, owner.getHealth() + 2.0));
+        owner.playSound(owner.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+        session.messageCounter++;
+        session.followCounter++;
+        boolean full = owner.getHealth() >= max;
+        boolean say = full || session.messageCounter >= MESSAGE_EVERY;
+        if (say) {
+            session.messageCounter = 0;
+            if (legacySupport != null) {
+                legacySupport.yuiHeal(owner, npc.getLocation());
+            }
+        }
+        boolean follow = full || session.followCounter >= FOLLOWUP_EVERY;
+        if (follow) {
+            session.followCounter = 0;
+            session.followAt = now + FOLLOWUP_DELAY_TICKS;
+        }
+    }
+
+    private void tickSandrone(Player owner, Mannequin npc, long now) {
+        if (!owner.getScoreboardTags().contains(CompanionManager.activeTag("sandrone"))) {
+            return;
+        }
+        SandroneSession session = sandSessions.computeIfAbsent(owner.getUniqueId(), ignored -> new SandroneSession());
+        if (session.nextAbsorbTick == Long.MIN_VALUE) {
+            session.nextAbsorbTick = now + SANDRONE_ABSORB_INTERVAL_TICKS;
+            return;
+        }
+        if (now < session.nextAbsorbTick || owner.isDead()) {
+            return;
+        }
+        session.nextAbsorbTick = now + SANDRONE_ABSORB_INTERVAL_TICKS;
+        owner.addPotionEffect(new PotionEffect(PotionEffectType.ABSORPTION,
+                SANDRONE_ABSORB_DURATION_TICKS, SANDRONE_ABSORB_AMPLIFIER, true, false, true));
+        session.messageCounter++;
+        session.followCounter++;
+        boolean say = session.lastVoiceTick == Long.MIN_VALUE
+                || now - session.lastVoiceTick >= SANDRONE_VOICE_COOLDOWN_TICKS;
+        if (say && legacySupport != null) {
+            session.messageCounter = 0;
+            legacySupport.sandroneAbsorption(owner, npc.getLocation());
+            session.lastVoiceTick = now;
+        }
+        boolean follow = session.followCounter >= FOLLOWUP_EVERY;
+        if (follow) {
+            session.followCounter = 0;
+            session.followAt = now + FOLLOWUP_DELAY_TICKS;
+        }
+    }
+
     /** Forgets every owner's state, so a fresh session starts clean. */
     void clear() {
         states.clear();
+        yuiSessions.clear();
+        sandSessions.clear();
     }
 }

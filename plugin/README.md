@@ -51,7 +51,7 @@ old version until the JAR is copied into its `plugins/` folder by hand.
 git clone https://github.com/Arif9863/Companion-Minecraft-Java.git
 ```
 
-The clone carries the plugin sources, both companion Skript scripts, the voice audio,
+The clone carries the plugin sources (retired Skript companion scripts are kept with a `-` prefix), the voice audio,
 the companion skins, `pack.mcmeta`, and both build scripts. It does not carry the
 world, `server.properties`, or the Paper server's `libraries/` — install Paper
 there yourself, or rely on the Maven fallback above.
@@ -89,11 +89,11 @@ not bypass the restriction. The default list holds Arif's UUID. Add another play
 own line under `companion-owners` to grant access, then restart the server or run
 `/companionnpc reload`. Commands never touch another player's companion.
 
-Commands intentionally keep the `-npc` suffix so they do not replace the existing Skript `/yui` and `/sandrone` commands, which wrap these NPC commands and add the voice system. Companion behavior stays command-driven; no extra GUI or control item is required.
+Companion behaviour (movement, combat, heal/absorption, pouches, and voice for all six **istri Arif** companions) lives entirely in this plugin. The old Skript scripts `yui_companion.sk` and `sandrone_companion.sk` are retired (renamed with a `-` prefix so Skript skips them). Use `/yui-npc`, `/sandrone-npc`, or `/istri` — pouches and dialogue work the same no matter which command spawned the NPC.
 
-The Skript `/yui` and `/sandrone` commands check the same list before they say anything. The plugin marks every allowed player with the `companion_npc_user` scoreboard tag, and the scripts refuse outsiders with their own line ("Hati dan kasih Yui hanya untuk Arif") instead of the friendly greeting. The tag is set on join and refreshed by `/companionnpc reload`.
+Allowed players are listed in `companion-owners`; the plugin marks them with the `companion_npc_user` scoreboard tag on join and on `/companionnpc reload`. Outsiders who try to use a companion get that companion's **deny** line in chat.
 
-While a companion mannequin is alive, the plugin also sets `companion_active_yui`, `companion_active_sandrone`, or `companion_active_eris` on that companion's owner. Skript uses those tags (not the older `{-yui-active::...}` flags alone) for heal/absorption, DuoVoice, and 3D sound routing, so another player never receives your companion's buffs or hears their lines from the wrong direction.
+While a companion mannequin is alive, the plugin sets `companion_active_<name>` on its owner (`yui`, `sandrone`, `furina`, `ei`, `columbina`, `escoffier`, or `eris`). Support buffs and voice routing always target the owner of that tag, so another player never receives your companion's effects or hears her lines from the wrong direction.
 
 ## The four newer companions (Furina, Ei, Columbina, Escoffier)
 
@@ -124,25 +124,34 @@ mob to fight, and puts it away again when the fight is over.
 
 | Companion | Ability | When it triggers | Effect |
 |---|---|---|---|
+| Yui | Heal | every 10 s while active | +2 HP; chat/voice on a cadence (and when full) |
+| Sandrone | Absorption III | every 45 s while active | 1 min absorption; voice at most once per 60 s |
 | Furina | Water Breathing | the owner is in water | 10 s, re-triggerable after 5 s |
 | Furina | Fire Resistance | the owner is burning (fire or lava) | 10 s, re-triggerable after 5 s |
 | Ei | Strength I | the owner makes a kill | 20 s, granted again after the next kill |
 | Columbina | Swiftness I | a hostile mob is targeting the owner | 15 s, re-triggerable after 5 s |
 | Escoffier | Slowness on the mob | a hostile mob is targeting the owner | 15 s on the mob itself, re-triggerable after 5 s |
 
-**Their own voice.** Each of the four has her own dialogue — 8 idle lines, 2 kill lines, 2
-assist lines, 1 follow-up, plus an on-call, a wait, and a deny line — in her own colour. A
-companion that is not allowed to use them is refused in her own words rather than in a generic
-message. The lines are plain text for now: the voice files are still being rendered, so no
-sound is attached yet. Once the files exist, the plugin plays the matching resource-pack sound
-event (`furina.idle_01`, `ei.kill_02`, and so on) automatically.
+**Voice (all six istri Arif).** Each companion has her own dialogue — idle, kill, assist/trigger,
+follow-up (5 s after assist), plus **on** (called), **deny**, and **tunggu** (wait). Resource-pack
+events follow `yui.heal`, `sandrone.kill_03`, `furina.idle_01`, and so on. Missing sound files are
+ignored safely (chat still shows).
 
-**Their own pouch.** Right-click any of the four to open a private 27-slot bag, the way Yui and
-Sandrone have one. Each bag is saved on its own — `furina-pouch.yml`, `ei-pouch.yml`,
-`columbina-pouch.yml`, `escoffier-pouch.yml` in `plugins/CompanionNPCs/` — so the four never
-share an inventory or overwrite each other. Only the player the companion belongs to can open
-it: anybody else is refused in the companion's own words. The bag is opened by right-clicking
-the companion itself, never by walking up to somebody else's.
+**Priority channel** (assist/heal + follow-up → kill → idle): when a higher-priority line plays,
+any lower-priority sound on the owner is stopped with `Player.stopSound(..., PLAYERS)`. **on**, **deny**,
+and **tunggu** are outside that system — they may overlap anything and are never cut off.
+
+**Shared idle rotation** (one line every 60 s while any istri Arif companion is active): Escoffier
+idle 1 → Sandrone idle 1 → Yui idle 1 → Furina idle 1 → Columbina idle 1 → Ei idle 1, then the
+same order for idle 2, idle 3, … until each archetype runs out of lines, then the cycle repeats.
+
+**Pouch (all six).** Right-click a companion to open a private 27-slot bag. Each is saved separately
+in `plugins/CompanionNPCs/` — `yui-pouch.yml`, `sandrone-pouch.yml`, `furina-pouch.yml`,
+`ei-pouch.yml`, `columbina-pouch.yml`, `escoffier-pouch.yml`. On first startup after this
+unification, items that lived in Skript variables are imported into the Yui/Sandrone YAML files
+when `plugins/Skript/variables.csv` is present. Only the companion's owner can open the bag;
+anyone else gets the deny line. Opening works the same whether the NPC was spawned with `/istri`,
+`/yui-npc`, or `/sandrone-npc`.
 
 ## Eris (standalone companion)
 

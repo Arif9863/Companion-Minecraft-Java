@@ -189,8 +189,9 @@ public final class CompanionListener implements Listener {
     public void onEntityDeath(EntityDeathEvent event) {
         plugin.getManager().recordCompanionKill(event.getEntity().getUniqueId());
         // Ei's strength follows the owner's own kills, not the companion's.
-        if (event.getEntity().getKiller() != null) {
-            plugin.getManager().noteOwnerKill(event.getEntity().getKiller());
+        if (event.getEntity().getKiller() != null
+                && event.getEntity() instanceof LivingEntity victim) {
+            plugin.getManager().noteOwnerKill(event.getEntity().getKiller(), victim);
         }
     }
 

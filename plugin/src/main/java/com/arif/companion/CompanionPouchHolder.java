@@ -40,6 +40,8 @@ final class CompanionPouchHolder implements InventoryHolder {
     /** The title shown on the pouch window. */
     private static Component titleFor(String archetype) {
         String label = switch (archetype == null ? "" : archetype.toLowerCase(java.util.Locale.ROOT)) {
+            case "yui" -> "Yui";
+            case "sandrone" -> "Sandrone";
             case "furina" -> "Furina";
             case "ei" -> "Ei";
             case "columbina" -> "Columbina";
