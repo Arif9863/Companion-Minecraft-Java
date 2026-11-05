@@ -55,6 +55,26 @@ commands:
     description: Call every companion that belongs to this owner at once
     usage: /istri [arif]
     permission: companion.npc.close
+  yui:
+    description: Call or dismiss Yui (the command the old Skript script used)
+    usage: /yui
+    permission: companion.npc.yui
+  sandrone:
+    description: Call or dismiss Sandrone (the command the old Skript script used)
+    usage: /sandrone
+    permission: companion.npc.sandrone
+  yuiclear:
+    description: Remove every Yui left behind
+    usage: /yuiclear
+    permission: companion.npc.yui
+  sandroneclear:
+    description: Remove every Sandrone left behind
+    usage: /sandroneclear
+    permission: companion.npc.sandrone
+  yuisandrone:
+    description: Mute or unmute the companions' chatter for the whole server
+    usage: /yuisandrone
+    permission: companion.npc.admin
   eris:
     aliases: [eris-chan]
     description: Call Eris, the standalone companion with one permanent owner

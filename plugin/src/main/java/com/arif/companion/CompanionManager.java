@@ -507,6 +507,8 @@ public final class CompanionManager {
         private long lastMarkerAlertTick = Long.MIN_VALUE;
         /** UUIDs of hostile mobs this companion is currently marking. */
         private final Set<UUID> markedHostiles = new HashSet<>();
+        /** UUIDs of hostile mobs the owner has already been warned about. */
+        private final Set<UUID> warnedHostiles = new HashSet<>();
         /** The standing behaviour of this companion: follow in formation, or stay close. */
         private FollowMode mode = FollowMode.FOLLOW;
         /** The mob this companion is currently engaging, or null when none. */
@@ -1663,9 +1665,12 @@ public final class CompanionManager {
             clearDangerMarkers(state);
             return;
         }
-        // Eris is standalone: she does not inherit either partner's marker duty, so she marks
-        // nothing at all rather than duplicating one of them.
-        if ("eris".equalsIgnoreCase(state.archetype)) {
+        // Only Yui and Sandrone keep watch for a dangerous mob. The four newer companions
+        // have no marker duty of their own: without this they would all mark the same creeper
+        // and warn about it, and the owner's chat would fill up with the same warning.
+        boolean watches = "yui".equalsIgnoreCase(state.archetype)
+                || "sandrone".equalsIgnoreCase(state.archetype);
+        if (!watches) {
             clearDangerMarkers(state);
             return;
         }
@@ -1696,7 +1701,7 @@ public final class CompanionManager {
             foundNow.add(hostileId);
             if (!state.markedHostiles.contains(hostileId)) {
                 state.markedHostiles.add(hostileId);
-                sendMarkerAlert(owner, state, kind, currentTick);
+                sendMarkerAlert(owner, state, kind, hostileId, currentTick);
             }
             if (currentTick % MARKER_PARTICLE_INTERVAL_TICKS == 0L) {
                 Location particleLocation = hostile.getLocation().add(0.0, hostile.getHeight() + 0.25, 0.0);
@@ -1718,8 +1723,20 @@ public final class CompanionManager {
         state.markedHostiles.clear();
     }
 
-    /** Send a companion-name-prefixed alert, capped to one message every 10 seconds. */
-    private void sendMarkerAlert(Player owner, FollowState state, String kind, long currentTick) {
+    /**
+     * Sends a companion-name-prefixed alert about a newly spotted dangerous mob.
+     *
+     * <p>The warning is about the mob, not about the companion, so it is remembered per mob: a
+     * second creeper is a genuinely new danger and is worth a word of its own, but the same
+     * creeper is only warned about once. Without this bookkeeping a group of creepers would
+     * produce one warning each, which is exactly the spam this guard exists to stop.</p>
+     */
+    private void sendMarkerAlert(Player owner, FollowState state, String kind, UUID hostileId,
+                                 long currentTick) {
+        if (!state.warnedHostiles.add(hostileId)) {
+            // Already warned about this mob: it is still marked, but not announced again.
+            return;
+        }
         boolean firstAlert = state.lastMarkerAlertTick == Long.MIN_VALUE;
         if (!firstAlert && currentTick - state.lastMarkerAlertTick < MARKER_ALERT_COOLDOWN_TICKS) {
             return;
@@ -3568,6 +3585,20 @@ public final class CompanionManager {
         Entity eris = Bukkit.getEntity(erisEntityId);
         return eris instanceof Mannequin mannequin
                 && mannequin.getScoreboardTags().contains("companion_eris");
+    }
+
+    /**
+     * Mutes or unmutes the companions' chatter for the whole server.
+     *
+     * @return whether the chatter is muted now
+     */
+    public boolean toggleCompanionChatter() {
+        return dialogue.toggleMuted();
+    }
+
+    /** Whether the companions are muted for the whole server. */
+    public boolean companionChatterMuted() {
+        return dialogue.isMuted();
     }
 
     /**

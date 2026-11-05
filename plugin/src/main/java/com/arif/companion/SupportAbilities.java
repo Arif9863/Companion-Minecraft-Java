@@ -379,6 +379,12 @@ final class SupportAbilities {
         if (!owner.getScoreboardTags().contains(CompanionManager.activeTag("yui"))) {
             return;
         }
+        // While the old Skript script is still loaded it does this job too: it heals the owner,
+        // plays the heal sound and says the line. Doing both at once would heal twice as fast
+        // and say every line twice, so the plugin keeps quiet until the script is gone.
+        if (LegacySkriptRetirement.legacyStillRunning()) {
+            return;
+        }
         YuiSession session = yuiSessions.computeIfAbsent(owner.getUniqueId(), ignored -> new YuiSession());
         if (session.nextHealTick == Long.MIN_VALUE) {
             session.nextHealTick = now + YUI_HEAL_INTERVAL_TICKS;
@@ -413,6 +419,11 @@ final class SupportAbilities {
 
     private void tickSandrone(Player owner, Mannequin npc, long now) {
         if (!owner.getScoreboardTags().contains(CompanionManager.activeTag("sandrone"))) {
+            return;
+        }
+        // The old Skript script grants the absorption too while it is still loaded, so the plugin
+        // waits for it to be retired rather than granting it twice.
+        if (LegacySkriptRetirement.legacyStillRunning()) {
             return;
         }
         SandroneSession session = sandSessions.computeIfAbsent(owner.getUniqueId(), ignored -> new SandroneSession());

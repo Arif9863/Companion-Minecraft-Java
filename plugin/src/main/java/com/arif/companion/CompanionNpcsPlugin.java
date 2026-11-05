@@ -137,6 +137,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         manager = new CompanionManager(this);
         File serverRoot = getDataFolder().getParentFile().getParentFile();
         SkriptPouchMigrator.migrateIfPresent(this, serverRoot);
+        // The old Skript scripts did the same work this plugin does now. They are retired
+        // before anything is spoken, so a script that is still loaded never causes a double
+        // heal or a double voice line.
+        LegacySkriptRetirement.schedule(this, serverRoot, this::takeOverLegacyCommands);
 
         registerCommand("yui-npc", new CompanionCommand("yui"));
         registerCommand("sandrone-npc", new CompanionCommand("sandrone"));
@@ -908,5 +912,140 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             case "escoffier" -> "Escoffier";
             default -> "Sandrone";
         };
+    }
+
+    /**
+     * Takes over the commands the retired Skript scripts used to own.
+     *
+     * <p>The old scripts answered {@code /yui}, {@code /sandrone}, {@code /yuiclear},
+     * {@code /sandroneclear} and {@code /yuisandrone}. Those names are taken over here so that
+     * the muscle memory of the owner keeps working after the scripts are gone. The commands are
+     * registered in the plugin's own {@code plugin.yml}, and Skript releases the names as soon
+     * as its scripts are unloaded.</p>
+     */
+    private void takeOverLegacyCommands() {
+        registerCommand("yui", new LegacyCompanionCommand("yui"));
+        registerCommand("sandrone", new LegacyCompanionCommand("sandrone"));
+        registerCommand("yuiclear", new LegacyClearCommand("yui"));
+        registerCommand("sandroneclear", new LegacyClearCommand("sandrone"));
+        registerCommand("yuisandrone", new LegacyMuteCommand());
+    }
+
+    /**
+     * The retired {@code /yui} and {@code /sandrone} commands.
+     *
+     * <p>They call the companion and dismiss her again, the way the scripts did: the second
+     * use of the command puts the companion away and says the companion's own farewell.</p>
+     */
+    private final class LegacyCompanionCommand implements CommandExecutor, TabCompleter {
+
+        private final String archetype;
+
+        private LegacyCompanionCommand(String archetype) {
+            this.archetype = archetype;
+        }
+
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label,
+                                 String[] args) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage(Component.text("This command can only be used by a player.",
+                        NamedTextColor.RED));
+                return true;
+            }
+            if (!mayUseYuiAndSandrone(player.getUniqueId())) {
+                manager.denyCompanion(player, archetype);
+                return true;
+            }
+            boolean wasOut = manager.hasCompanion(player.getUniqueId(), archetype);
+            if (wasOut) {
+                manager.despawn(player, archetype);
+                player.sendMessage(Component.text(switch (archetype) {
+                    case "yui" -> "Hubungi Yui Kapan saja ya... Arif......";
+                    default -> "Jangan ceroboh loh....bilang aja kalau butuh bantuan Sandrone";
+                }, colorFor(archetype)));
+                return true;
+            }
+            manager.spawn(player, archetype);
+            player.sendMessage(Component.text(switch (archetype) {
+                case "yui" -> "Asisten Yui siap membantu Arif.....";
+                default -> "Sandrone hanya membantu kali ini saja Arif....";
+            }, colorFor(archetype)));
+            return true;
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias,
+                                          String[] args) {
+            return List.of();
+        }
+    }
+
+    /** The retired {@code /yuiclear} and {@code /sandroneclear} commands. */
+    private final class LegacyClearCommand implements CommandExecutor, TabCompleter {
+
+        private final String archetype;
+
+        private LegacyClearCommand(String archetype) {
+            this.archetype = archetype;
+        }
+
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label,
+                                 String[] args) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage(Component.text("This command can only be used by a player.",
+                        NamedTextColor.RED));
+                return true;
+            }
+            if (!mayUseYuiAndSandrone(player.getUniqueId())) {
+                manager.denyCompanion(player, archetype);
+                return true;
+            }
+            manager.despawn(player, archetype);
+            player.sendMessage(Component.text(labelFor(archetype) + " dibersihkan.",
+                    colorFor(archetype)));
+            return true;
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias,
+                                          String[] args) {
+            return List.of();
+        }
+    }
+
+    /**
+     * The retired {@code /yuisandrone} command: it mutes or unmutes the companions' chatter for
+     * the whole server.
+     */
+    private final class LegacyMuteCommand implements CommandExecutor, TabCompleter {
+
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (sender instanceof Player player) {
+                if (!player.isOp()) {
+                    player.sendMessage(Component.text(
+                            "Hanya OP yang dapat mengubah obrolan Yui dan Sandrone.", NamedTextColor.RED));
+                    return true;
+                }
+            } else if (!(sender instanceof org.bukkit.command.ConsoleCommandSender)) {
+                sender.sendMessage(Component.text("This command can only be used by a player.",
+                        NamedTextColor.RED));
+                return true;
+            }
+            boolean muted = manager.toggleCompanionChatter();
+            Bukkit.broadcast(Component.text(muted
+                    ? "Obrolan Yui dan Sandrone: Hubungi kami kapan saja.."
+                    : "Obrolan Yui dan Sandrone: Siap menemani perjalananmu",
+                    muted ? NamedTextColor.GRAY : NamedTextColor.LIGHT_PURPLE));
+            return true;
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias,
+                                          String[] args) {
+            return List.of();
+        }
     }
 }

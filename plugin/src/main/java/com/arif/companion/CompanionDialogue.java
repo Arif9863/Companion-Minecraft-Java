@@ -312,6 +312,23 @@ final class CompanionDialogue {
     private final Map<UUID, OwnerKill> ownerKills = new HashMap<>();
     /** The channel the three interruptible categories queue up on. */
     private final CompanionVoiceArbiter arbiter = new CompanionVoiceArbiter();
+    /** Whether the companions are muted for the whole server. */
+    private boolean muted;
+
+    /**
+     * Mutes or unmutes the companions' chatter.
+     *
+     * @return whether the chatter is muted now
+     */
+    boolean toggleMuted() {
+        muted = !muted;
+        return muted;
+    }
+
+    /** Whether the companions are muted for the whole server. */
+    boolean isMuted() {
+        return muted;
+    }
 
     private static String key(Player owner, String archetype) {
         return owner.getUniqueId() + ":" + archetype.toLowerCase(Locale.ROOT);
@@ -399,6 +416,19 @@ final class CompanionDialogue {
                 "[" + voice.label() + "] " + line, voice.color()));
     }
 
+    /**
+     * Sends a line in the companion's own voice, unless the chatter is muted.
+     *
+     * <p>The mute silences the companions for the whole server, so the text goes as well as the
+     * sound: a muted companion that still wrote in chat would only be half muted.</p>
+     */
+    private void sendIfAudible(Player target, Voice voice, String line) {
+        if (muted) {
+            return;
+        }
+        send(target, voice, line);
+    }
+
     /** Plays a sound event at a position, for one player. */
     private static void play(Player target, String sound, Location at) {
         if (sound == null || at == null) {
@@ -412,11 +442,19 @@ final class CompanionDialogue {
         }
     }
 
+    /** Plays a sound event, unless the chatter is muted. */
+    private void playIfAudible(Player target, String sound, Location at) {
+        if (muted) {
+            return;
+        }
+        play(target, sound, at);
+    }
+
     /** One line, ready to be spoken: chat, sound and where the sound stands. */
     private Runnable utter(Player owner, Voice voice, Spoken chosen, Location at) {
         return () -> {
-            send(owner, voice, chosen.line());
-            play(owner, chosen.sound(), at);
+            sendIfAudible(owner, voice, chosen.line());
+            playIfAudible(owner, chosen.sound(), at);
         };
     }
 
@@ -441,9 +479,9 @@ final class CompanionDialogue {
         }
         Location playAt = at != null ? at : voiceSphere(owner, voice.archetype());
         boolean said = arbiter.trySpeak(owner, categoryPriority, holdTicks, chosen.sound(), () -> {
-            send(owner, voice, chosen.line());
+            sendIfAudible(owner, voice, chosen.line());
             if (playAt != null) {
-                play(owner, chosen.sound(), playAt);
+                playIfAudible(owner, chosen.sound(), playAt);
             }
         });
         return said ? chosen : null;
@@ -704,10 +742,10 @@ final class CompanionDialogue {
         Location playAt = at != null ? at : voiceSphere(owner, archetype);
         arbiter.trySpeak(owner, CompanionVoiceArbiter.PRIORITY_ASSIST, IDLE_HOLD_TICKS,
                 chosen.sound(), () -> {
-                    send(owner, voice, chosen.line());
+                    sendIfAudible(owner, voice, chosen.line());
                     if (playAt != null) {
-                        play(owner, chosen.sound(), playAt);
-                        play(owner, "entity.experience_orb.pickup", playAt);
+                        playIfAudible(owner, chosen.sound(), playAt);
+                        playIfAudible(owner, "entity.experience_orb.pickup", playAt);
                     }
                 });
     }
