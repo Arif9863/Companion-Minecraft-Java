@@ -25,10 +25,11 @@
 #    ei_<aksi>_<nomor>.ogg        contoh: ei_kill_01.ogg
 #    columbina_<aksi>_<nomor>.ogg contoh: columbina_idle_05.ogg
 #    escoffier_<aksi>_<nomor>.ogg contoh: escoffier_kill_02.ogg
-#  <aksi> yang sudah ada: on, deny, heal, followup, regen, kill, idle, assist, off
+#  <aksi> yang sudah ada: on, deny, heal, followup, regen, kill, idle, assist, wait, off
 #  Event di sounds.json dibuat dari nama file:
 #    yui_idle_09.ogg  ->  event "yui.idle_09"
 #    yui_on_01.ogg    ->  event "yui.on"
+#    furina_wait_01.ogg -> event "furina.wait"  (baris "tunggu")
 #
 #  Catatan update dialog BARU di .sk: lihat pesan REMINDER di bawah.
 # =====================================================================
@@ -106,9 +107,9 @@ try {
         $num  = $Matches[4]
 
         # yui_idle_09 -> yui.idle_09 ; yui_on_01 -> yui.on (yang "_01" hanya penomoran file)
-        # Kategori yang hanya punya satu baris dialog (on, deny, heal, followup, regen, off)
+        # Kategori yang hanya punya satu baris dialog (on, deny, heal, followup, regen, wait, off)
         # memakai event tanpa nomor; sisanya bernomor per baris dialog.
-        if($num -and $act -in @('on','deny','heal','followup','regen','off')){
+        if($num -and $act -in @('on','deny','heal','followup','regen','wait','off')){
             $ev = "$char.$act"
         } elseif($num){
             $ev = "$char.$act" + "_$num"

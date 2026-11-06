@@ -27,13 +27,15 @@ import java.util.UUID;
  *   <li><b>assist</b> — she just used her support ability: heals, absorption, buffs.</li>
  *   <li><b>follow-up</b> — the fight is over; she adds one last remark.</li>
  *   <li><b>deny</b> — somebody who is not Arif tried to call her.</li>
- *   <li><b>off</b> — she was told to wait where she stands.</li>
+ *   <li><b>off</b> — she was told to wait where she stands (dialogue text; sound event
+ *   {@code wait} in the resource pack).</li>
  * </ul>
  *
  * <p>Three categories take turns on one channel, by priority, through
  * {@link CompanionVoiceArbiter}: assist and follow-up are first, kill second, idle last. A line
  * may cut off a lower one that is still playing; an equal or lower one is turned away. The
- * remaining three — <b>on</b>, <b>deny</b> and <b>off</b> (tunggu) — sit outside the queue:
+ * remaining three — <b>on</b>, <b>deny</b> and <b>wait</b> (tunggu; stored as {@code off} on the
+ * voice record) — sit outside the queue:
  * they play at any time, they never cut anything off, and they may overlap with each other.</p>
  *
  * <p>Idle is shared rather than per companion. All six take their turn in the fixed order
@@ -66,8 +68,8 @@ final class CompanionDialogue {
     /** How long an idle line claims the channel, in ticks. */
     private static final long IDLE_HOLD_TICKS = 100L;
 
-    /** How far from the owner a companion may stand and still be heard. */
-    private static final double VOICE_RADIUS = 256.0;
+    /** How far from the companion body a voice line may still be heard (same as {@link #voiceSphere}). */
+    static final double VOICE_RADIUS = 256.0;
 
     /** Volume of a companion's own voice. */
     private static final float VOICE_VOLUME = 1.0f;
@@ -429,32 +431,34 @@ final class CompanionDialogue {
         send(target, voice, line);
     }
 
-    /** Plays a sound event at a position, for one player. */
-    private static void play(Player target, String sound, Location at) {
-        if (sound == null || at == null) {
+    /** Plays a sound event at a position for every player who should hear it. */
+    private static void playBroadcast(Player owner, String sound, Location at) {
+        if (sound == null || at == null || owner == null) {
             return;
         }
-        try {
-            target.playSound(at, sound, SoundCategory.PLAYERS, VOICE_VOLUME, 1.0f);
-        } catch (RuntimeException ignored) {
-            // A missing sound event is not worth interrupting the game for: the client simply
-            // ignores it, and the text line has already been shown.
+        for (Player listener : CompanionVoiceArbiter.audienceFor(owner, at)) {
+            try {
+                listener.playSound(at, sound, SoundCategory.PLAYERS, VOICE_VOLUME, 1.0f);
+            } catch (RuntimeException ignored) {
+                // A missing sound event is not worth interrupting the game for: the client simply
+                // ignores it, and the text line has already been shown.
+            }
         }
     }
 
-    /** Plays a sound event, unless the chatter is muted. */
-    private void playIfAudible(Player target, String sound, Location at) {
+    /** Plays a sound for the broadcast audience, unless the chatter is muted. */
+    private void playBroadcastIfAudible(Player owner, String sound, Location at) {
         if (muted) {
             return;
         }
-        play(target, sound, at);
+        playBroadcast(owner, sound, at);
     }
 
     /** One line, ready to be spoken: chat, sound and where the sound stands. */
     private Runnable utter(Player owner, Voice voice, Spoken chosen, Location at) {
         return () -> {
             sendIfAudible(owner, voice, chosen.line());
-            playIfAudible(owner, chosen.sound(), at);
+            playBroadcastIfAudible(owner, chosen.sound(), at);
         };
     }
 
@@ -478,12 +482,13 @@ final class CompanionDialogue {
             return null;
         }
         Location playAt = at != null ? at : voiceSphere(owner, voice.archetype());
-        boolean said = arbiter.trySpeak(owner, categoryPriority, holdTicks, chosen.sound(), () -> {
-            sendIfAudible(owner, voice, chosen.line());
-            if (playAt != null) {
-                playIfAudible(owner, chosen.sound(), playAt);
-            }
-        });
+        boolean said = arbiter.trySpeak(owner, categoryPriority, holdTicks, chosen.sound(), playAt,
+                () -> {
+                    sendIfAudible(owner, voice, chosen.line());
+                    if (playAt != null) {
+                        playBroadcastIfAudible(owner, chosen.sound(), playAt);
+                    }
+                });
         return said ? chosen : null;
     }
 
@@ -511,7 +516,7 @@ final class CompanionDialogue {
         if (voice == null || at == null) {
             return;
         }
-        Spoken chosen = pick(voice, "off", List.of(voice.off()), -1, null);
+        Spoken chosen = pick(voice, "wait", List.of(voice.off()), -1, null);
         if (chosen == null) {
             return;
         }
@@ -532,7 +537,7 @@ final class CompanionDialogue {
         Spoken chosen = new Spoken(voice.deny(), SOUND_NAMESPACE + ":" + voice.archetype() + ".deny", 0);
         arbiter.speakFree(() -> {
             send(player, voice, chosen.line());
-            play(player, chosen.sound(), player.getLocation());
+            playBroadcast(player, chosen.sound(), player.getLocation());
         });
     }
 
@@ -578,7 +583,7 @@ final class CompanionDialogue {
                 continue;
             }
             if (!arbiter.trySpeak(owner, CompanionVoiceArbiter.PRIORITY_IDLE, IDLE_HOLD_TICKS,
-                    chosen.sound(), utter(owner, voice, chosen, at))) {
+                    chosen.sound(), at, utter(owner, voice, chosen, at))) {
                 // The channel is taken by a higher line. The turn is not spent: hand it out
                 // again as soon as there is room, so the rotation keeps its order.
                 idle.nextTurnTick = currentTick + ASSIST_HOLD_TICKS;
@@ -666,7 +671,7 @@ final class CompanionDialogue {
             state.lastFollowupLine = chosen.line();
             state.supportSequenceTick = Long.MIN_VALUE;
             if (at != null) {
-                play(owner, "entity.experience_orb.pickup", at);
+                playBroadcastIfAudible(owner, "entity.experience_orb.pickup", at);
             }
         }
     }
@@ -700,10 +705,10 @@ final class CompanionDialogue {
                 "[Yui] Arif.....mundur, biar Yui merawatmu", NamedTextColor.LIGHT_PURPLE));
         Location playAt = at != null ? at : voiceSphere(owner, "yui");
         String sound = SOUND_NAMESPACE + ":yui.heal";
-        arbiter.trySpeak(owner, CompanionVoiceArbiter.PRIORITY_ASSIST, ASSIST_HOLD_TICKS, sound,
+        arbiter.trySpeak(owner, CompanionVoiceArbiter.PRIORITY_ASSIST, ASSIST_HOLD_TICKS, sound, playAt,
                 () -> {
                     if (playAt != null) {
-                        play(owner, sound, playAt);
+                        playBroadcastIfAudible(owner, sound, playAt);
                     }
                 });
     }
@@ -721,10 +726,10 @@ final class CompanionDialogue {
         send(owner, voice, "Mundurlah Arif.....biar nona Sandrone yang menolongmu");
         Location playAt = at != null ? at : voiceSphere(owner, "sandrone");
         String sound = SOUND_NAMESPACE + ":sandrone.regen";
-        arbiter.trySpeak(owner, CompanionVoiceArbiter.PRIORITY_ASSIST, ASSIST_HOLD_TICKS, sound,
+        arbiter.trySpeak(owner, CompanionVoiceArbiter.PRIORITY_ASSIST, ASSIST_HOLD_TICKS, sound, playAt,
                 () -> {
                     if (playAt != null) {
-                        play(owner, sound, playAt);
+                        playBroadcastIfAudible(owner, sound, playAt);
                     }
                 });
     }
@@ -741,11 +746,11 @@ final class CompanionDialogue {
         }
         Location playAt = at != null ? at : voiceSphere(owner, archetype);
         arbiter.trySpeak(owner, CompanionVoiceArbiter.PRIORITY_ASSIST, IDLE_HOLD_TICKS,
-                chosen.sound(), () -> {
+                chosen.sound(), playAt, () -> {
                     sendIfAudible(owner, voice, chosen.line());
                     if (playAt != null) {
-                        playIfAudible(owner, chosen.sound(), playAt);
-                        playIfAudible(owner, "entity.experience_orb.pickup", playAt);
+                        playBroadcastIfAudible(owner, chosen.sound(), playAt);
+                        playBroadcastIfAudible(owner, "entity.experience_orb.pickup", playAt);
                     }
                 });
     }

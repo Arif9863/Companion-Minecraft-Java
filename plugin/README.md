@@ -134,12 +134,13 @@ mob to fight, and puts it away again when the fight is over.
 
 **Voice (all six istri Arif).** Each companion has her own dialogue — idle, kill, assist/trigger,
 follow-up (5 s after assist), plus **on** (called), **deny**, and **tunggu** (wait). Resource-pack
-events follow `yui.heal`, `sandrone.kill_03`, `furina.idle_01`, and so on. Missing sound files are
+events follow `yui.heal`, `sandrone.kill_03`, `furina.idle_01`, `furina.wait`, and so on (**wait** is
+the sound for `/tunggu`, mapped from `furina_wait_01.ogg`-style files). Missing sound files are
 ignored safely (chat still shows).
 
 **Priority channel** (assist/heal + follow-up → kill → idle): when a higher-priority line plays,
 any lower-priority sound on the owner is stopped with `Player.stopSound(..., PLAYERS)`. **on**, **deny**,
-and **tunggu** are outside that system — they may overlap anything and are never cut off.
+and **wait** (tunggu) are outside that system — they may overlap anything and are never cut off.
 
 **Shared idle rotation** (one line every 60 s while any istri Arif companion is active): Escoffier
 idle 1 → Sandrone idle 1 → Yui idle 1 → Furina idle 1 → Columbina idle 1 → Ei idle 1, then the
