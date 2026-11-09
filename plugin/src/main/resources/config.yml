@@ -85,6 +85,12 @@ sandrone-creeper-mark-radius: 16.0
 pack-http-server: true
 pack-http-port: 8765
 
+# How often the clickable control line ([Ikut] [Kesini] [Tunggu]) is repeated in chat, in
+# seconds, while your companions are out. A chat line scrolls away, so a fresh line every
+# minute keeps the controls on screen and clickable without hunting for them.
+# Set it to 0 to send the line only once, right after /istri.
+control-bar-repeat-seconds: 60
+
 # Debug-only: when enabled, spawn both NPCs for first player online at plugin startup.
 # Keep false on your main server. Used only for isolated test server.
 debug-self-test: false

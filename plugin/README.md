@@ -83,6 +83,25 @@ four newer ones. `semua` means the whole group, never Eris — she has her own c
 - `/eris` (alias `/eris-chan`) — call Eris, the standalone companion.
 - `/eris ikut`, `/eris kesini`, `/eris tunggu`, `/eris off` — control her.
 
+### Clickable controls
+
+After `/istri` (and after `/eris`), the plugin sends one extra chat line with clickable
+labels: `[Ikut] [Kesini] [Tunggu]` for the group, and `[Ikut] [Kesini] [Tunggu] [Off]` for
+Eris. Clicking a label runs the matching command — `/ikut semua`, `/kesini semua`,
+`/tunggu semua`, `/eris ikut` and so on — exactly as if it had been typed, so the click
+cannot disagree with the command.
+
+The line is sent **once**, right after the companions are called. It is not shown in the
+action bar: the action bar is the single line above the hotbar that the companions already use
+for their own messages (Yui's heal, Sandrone's protection), and its text cannot be clicked in
+Java Edition.
+
+A chat line scrolls away with the rest of the chat, so the line is also **repeated every 60
+seconds** while you still have companions out — the newest line is then always the one on
+screen and can be clicked without scrolling to look for it. Change `control-bar-repeat-seconds`
+in `config.yml` (or set it to `0` to send the line only after `/istri`), then run
+`/companionnpc reload`.
+
 **Yui and Sandrone are UUID-locked.** Only UUIDs listed in `companion-owners` in
 `plugins/CompanionNPCs/config.yml` may call them or use their behaviour commands; OP status does
 not bypass the restriction. The default list holds Arif's UUID. Add another player's UUID on its

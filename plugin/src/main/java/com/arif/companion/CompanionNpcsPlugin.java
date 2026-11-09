@@ -30,6 +30,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private CompanionManager manager;
     private CompanionListener listener;
     private PackHttpServer packServer;
+    private CompanionControlRepeater controlRepeater;
     private double comfortDistance;
     private double closeDistance;
     private int teleportDistance;
@@ -156,6 +157,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         registerCommand("eris", new ErisCommand());
         listener = new CompanionListener(this);
         Bukkit.getPluginManager().registerEvents(listener, this);
+        // The clickable control line scrolls away with the rest of the chat, so it is repeated
+        // every so often while the companions are out. The newest line is then always the one
+        // on screen, and it can be clicked without looking for it.
+        controlRepeater = new CompanionControlRepeater(this, manager, controlRepeatSeconds());
+        controlRepeater.start();
         // Mark the players who may use Yui and Sandrone, so the Skript scripts can tell an
         // outsider from the owner before they print their own lines.
         refreshCompanionUserTags();
@@ -224,8 +230,7 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
     private void readConfig() {
         FileConfiguration config = getConfig();
-        yuiSandroneAllowed.clear();
-        List<String> configuredOwners = config.getStringList("companion-owners");
+        yuiSandroneAllowed.clear();        List<String> configuredOwners = config.getStringList("companion-owners");
         if (configuredOwners.isEmpty()) {
             // Existing installation default: reserve Yui and Sandrone to Arif9863.
             configuredOwners = List.of("515402e5-832e-311e-b35f-3f3f0eca8f4f");
@@ -323,6 +328,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (controlRepeater != null) {
+            controlRepeater.stop();
+            controlRepeater = null;
+        }
         if (packServer != null) {
             packServer.stop();
             packServer = null;
@@ -339,6 +348,15 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
     String skinUrl(String archetype) {
         return getConfig().getString(archetype.toLowerCase(Locale.ROOT) + ".skin-url", "");
+    }
+
+    /**
+     * How often the clickable control line is repeated, in seconds.
+     *
+     * @return the interval in seconds; 0 means the line is only sent once
+     */
+    int controlRepeatSeconds() {
+        return Math.max(0, getConfig().getInt("control-bar-repeat-seconds", 60));
     }
 
     int followDistance() {
@@ -739,6 +757,10 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
             player.sendMessage(Component.text(
                     summoned.size() + " istri siap mengikutimu: " + String.join(", ", summoned) + ".",
                     NamedTextColor.LIGHT_PURPLE));
+            // The controls are the commands that already exist, as clickable text: the line
+            // runs them exactly as if they had been typed, so there is nothing new to keep in
+            // step with the commands themselves.
+            CompanionControlBar.send(player, CompanionControlBar.forGroup("semua"));
             return true;
         }
 
@@ -791,6 +813,9 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                 }
                 manager.spawn(player, "eris", true);
                 player.sendMessage(Component.text("Eris sekarang mengikuti Ferdi-Kun.", NamedTextColor.RED));
+                // The same clickable controls as the other companions, running Eris's own
+                // commands, which are separate from the group's.
+                CompanionControlBar.send(player, CompanionControlBar.forEris());
                 return true;
             }
 
@@ -861,6 +886,13 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
                     reloadConfig();
                     readConfig();
                     refreshCompanionUserTags();
+                    // The repeat interval is a setting, so a reload has to pick it up too.
+                    if (controlRepeater != null) {
+                        controlRepeater.stop();
+                    }
+                    controlRepeater = new CompanionControlRepeater(
+                            CompanionNpcsPlugin.this, manager, controlRepeatSeconds());
+                    controlRepeater.start();
                     sender.sendMessage(Component.text("Companion NPC config reloaded.", NamedTextColor.GREEN));
                 }
                 case "config" -> {
