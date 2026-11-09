@@ -6,6 +6,7 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.lang.reflect.Method;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -61,7 +62,9 @@ final class LegacySkriptRetirement {
         File scriptsDir = new File(serverRoot, "plugins/Skript/scripts");
         legacyRunning = enabledLegacyFileExists(scriptsDir) && skriptEnabled(plugin);
         RetirementTask task = new RetirementTask(plugin, scriptsDir, whenRetired);
-        task.self = plugin.getServer().getScheduler().runTaskTimer(plugin, task, 20L, 20L);
+        // The first check waits a few seconds: Skript loads its scripts on its own thread, and
+        // a script that is still on its way into memory must be unloaded, not renamed away.
+        task.self = plugin.getServer().getScheduler().runTaskTimer(plugin, task, 60L, 20L);
     }
 
     /** The repeating check that unloads and renames the legacy scripts. */
@@ -72,6 +75,8 @@ final class LegacySkriptRetirement {
         private BukkitTask self;
         private int attempts;
         private boolean done;
+        /** Whether the plugin's commands have already been taken over. */
+        private boolean handedOver;
 
         private RetirementTask(JavaPlugin plugin, File scriptsDir, Runnable whenRetired) {
             this.plugin = plugin;
@@ -84,38 +89,39 @@ final class LegacySkriptRetirement {
             if (done) {
                 return;
             }
-            if (attempts++ >= ATTEMPTS) {
-                done = true;
-                stop();
-                plugin.getLogger().warning("The old Yui/Sandrone Skript scripts could not be retired. "
-                        + "Yui and Sandrone may speak twice. Remove them by hand from "
-                        + scriptsDir.getPath() + ".");
-                whenRetired.run();
-                return;
-            }
+            // The scripts are unloaded and renamed on every pass, and the pass keeps running for
+            // the whole window: Skript loads its scripts on its own thread, so a script can still
+            // arrive after the first check. Stopping at the first success would let that script
+            // run for the rest of the session.
             int unloaded = unloadLoadedScripts(plugin);
             if (unloaded > 0) {
                 plugin.getLogger().info("Unloaded " + unloaded
                         + " legacy Yui/Sandrone Skript script(s).");
             }
-            // A script that is loaded is still doing the plugin's work, so the plugin's own
-            // support abilities keep quiet until it is gone.
-            boolean stillLoaded = unloaded > 0
-                    || (enabledLegacyFileExists(scriptsDir) && skriptEnabled(plugin));
+            // The truth about whether the old script is still doing the plugin's work is what
+            // Skript has loaded — not what sits in the scripts folder. A file that merely exists
+            // on disk proves nothing, and treating it as "still running" used to switch the
+            // plugin's own healing off for the whole session.
+            boolean stillLoaded = !loadedLegacyScripts(plugin).isEmpty();
             legacyRunning = stillLoaded;
-            if (stillLoaded) {
-                // The files are renamed only once nothing is loaded from them: renaming a file
-                // that Skript has open would leave the script running from memory.
-                return;
+            if (!stillLoaded) {
+                // Nothing is running from those files any more, so the plugin may take over.
+                // Renaming them keeps Skript from loading them again on the next start.
+                renameLegacyFiles(scriptsDir);
             }
-            if (renameLegacyFiles(scriptsDir)) {
-                plugin.getLogger().info("Renamed the legacy Yui/Sandrone Skript scripts so Skript "
-                        + "skips them from now on.");
+            if (!handedOver && !enabledLegacyFileExists(scriptsDir)) {
+                handedOver = true;
+                whenRetired.run();
             }
-            if (!enabledLegacyFileExists(scriptsDir)) {
+            if (attempts++ >= ATTEMPTS) {
                 done = true;
                 stop();
-                whenRetired.run();
+                if (legacyRunning) {
+                    plugin.getLogger().warning("The old Yui/Sandrone Skript scripts are still loaded "
+                            + "and could not be unloaded. Yui and Sandrone will not heal or protect "
+                            + "the owner, because the script would do it as well. Remove them by hand "
+                            + "from " + scriptsDir.getPath() + ".");
+                }
             }
         }
 
@@ -124,6 +130,42 @@ final class LegacySkriptRetirement {
                 self.cancel();
             }
         }
+    }
+
+    /**
+     * The legacy scripts that Skript currently has loaded.
+     *
+     * <p>This is the only trustworthy answer to "is the old script still doing the plugin's
+     * work?". A script file sitting in the scripts folder proves nothing: Skript may never have
+     * loaded it, or it may have been unloaded already. Only the loader's own list of loaded
+     * scripts tells the truth, and reading that list is also what makes the rename possible —
+     * the old code asked the filesystem, so a script that had already been unloaded still looked
+     * "present", the rename never happened, and the plugin's own healing stayed switched off
+     * for the whole session.</p>
+     *
+     * @return the loaded legacy scripts; empty when none is running
+     */
+    private static Set<Object> loadedLegacyScripts(JavaPlugin plugin) {
+        Set<Object> found = new LinkedHashSet<>();
+        if (!skriptEnabled(plugin)) {
+            return found;
+        }
+        try {
+            Class<?> loaderClass = Class.forName("ch.njol.skript.ScriptLoader");
+            Method getLoaded = loaderClass.getMethod("getLoadedScripts");
+            Object loaded = getLoaded.invoke(null);
+            if (!(loaded instanceof Set<?> scripts)) {
+                return found;
+            }
+            for (Object script : scripts) {
+                if (isLegacy(script)) {
+                    found.add(script);
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException ex) {
+            plugin.getLogger().warning("Could not check the legacy Skript scripts: " + ex);
+        }
+        return found;
     }
 
     /**
