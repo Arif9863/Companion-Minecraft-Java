@@ -342,6 +342,20 @@ never overwritten. `/companionnpc reload` re-reads the file without restarting t
 
 NPCs despawn when the owner quits. The plugin cleans tagged strays on disable and on `/companionnpc clear`.
 
+## Startup version check
+
+When the server starts, the plugin compares the running Minecraft version with the one this
+build targets (26.3). A difference is only a warning — the plugin still enables, so a newer
+Paper can be tested — but the message names the version mismatch instead of letting it go
+unnoticed.
+
+The plugin also reads `resource-pack/pack.mcmeta` and compares the format it declares with the
+format the running server expects, using the same rule the client uses: the server's format
+has to fall inside the range the pack accepts. This is the one failure that happens without
+any error — the server keeps running, the plugin keeps working, and the client simply refuses
+the pack, so the voices and the skins disappear with nothing in the log to explain it. When
+the formats disagree, the startup log says so and names the file to fix.
+
 ## Tests
 
 Compile against Paper 26.3, then use an isolated server copy on port 25566. Set `debug-self-test: true` only there to spawn both mannequins at test-world spawn and log `SELF-TEST PASS`; default stays false. Do not enable debug self-test on production.

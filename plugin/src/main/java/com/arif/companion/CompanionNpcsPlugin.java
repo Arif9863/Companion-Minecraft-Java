@@ -27,6 +27,9 @@ import java.util.UUID;
 
 public final class CompanionNpcsPlugin extends JavaPlugin {
 
+    /** The Minecraft version this plugin build currently targets. */
+    private static final String TARGET_MINECRAFT_VERSION = "26.3";
+
     private CompanionManager manager;
     private CompanionListener listener;
     private PackHttpServer packServer;
@@ -129,6 +132,8 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        warnIfMinecraftVersionDiffers();
+        warnIfPackFormatLooksStale();
         saveDefaultConfig();
         // Bring the config on disk up to date first, then read it: a value that was just added
         // to the file by hand is picked up in the same startup.
@@ -171,6 +176,161 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         getLogger().info("Companion NPCs enabled. Commands: /yui-npc, /sandrone-npc, /ikut, /kesini, /tunggu, /companionnpc");
         if (getConfig().getBoolean("debug-self-test", false)) {
             runSelfTest();
+        }
+    }
+
+    /**
+     * Warns when the server is running a Minecraft version other than the one this plugin
+     * was built and tested for. This is advisory only: Paper may preserve compatibility, so
+     * the plugin continues enabling and lets the owner test it on the newer version.
+     */
+    private void warnIfMinecraftVersionDiffers() {
+        String runningVersion = Bukkit.getMinecraftVersion();
+        if (TARGET_MINECRAFT_VERSION.equals(runningVersion)) {
+            getLogger().info("Minecraft version " + runningVersion
+                    + " matches the version this plugin was built for.");
+            return;
+        }
+        getLogger().warning("This build targets Minecraft " + TARGET_MINECRAFT_VERSION
+                + ", but the server is running Minecraft " + runningVersion + ". "
+                + "Companions may still work, but check the resource-pack format, rebuild the "
+                + "plugin against this Paper version, and test all companion features before "
+                + "using it in production.");
+    }
+
+    /**
+     * Warns when the resource pack declares a format that no longer fits the running server.
+     *
+     * <p>The pack format is the one thing that can fail without any error: the server keeps
+     * running, the plugin keeps working, and the client simply refuses the pack, so the voices
+     * and the skins disappear without a word anywhere. The pack's own manifest is read here —
+     * the very file the client reads — and the format it declares is compared with the format
+     * the running server expects, using the same rule the client uses.</p>
+     */
+    private void warnIfPackFormatLooksStale() {
+        File serverRoot = getDataFolder().getParentFile().getParentFile();
+        File manifest = new File(new File(serverRoot, "resource-pack"), "pack.mcmeta");
+        if (!manifest.isFile()) {
+            return;
+        }
+        int[] declared = readDeclaredPackFormat(manifest);
+        if (declared == null) {
+            getLogger().warning("Could not read the resource pack format from " + manifest.getPath()
+                    + ". The voices and the skins may be refused by the client.");
+            return;
+        }
+        int[] expected = expectedPackFormat();
+        if (expected == null || isFormatAccepted(declared, expected)) {
+            return;
+        }
+        getLogger().warning("The resource pack declares format "
+                + formatText(declared[0], declared[1]) + " to " + formatText(declared[2], declared[3])
+                + ", but this server expects format " + formatText(expected[0], expected[1]) + ". "
+                + "Clients will refuse the pack, so the companions lose their voices and skins. "
+                + "Update resource-pack/pack.mcmeta and run rebuild-pack.ps1.");
+    }
+
+    /**
+     * Whether a client running the given format would accept a pack of the given format.
+     *
+     * <p>This follows the rule the client itself uses: the server's format has to fall inside
+     * the range the pack accepts, and both ends of that range count.</p>
+     *
+     * @param declared the pack's accepted range as {minMajor, minMinor, maxMajor, maxMinor}
+     * @param expected the server's format as {major, minor}
+     */
+    private static boolean isFormatAccepted(int[] declared, int[] expected) {
+        int server = expected[0] * 1000 + expected[1];
+        int min = declared[0] * 1000 + declared[1];
+        int max = declared[2] * 1000 + declared[3];
+        return server >= min && server <= max;
+    }
+
+    /**
+     * Writes a format as {@code major.minor}, with every minor version marked by a star.
+     */
+    private static String formatText(int major, int minor) {
+        return major + "." + (minor == Integer.MAX_VALUE ? "*" : String.valueOf(minor));
+    }
+
+    /**
+     * Reads the accepted pack format range out of a {@code pack.mcmeta} file.
+     *
+     * <p>Both spellings are understood: {@code min_format}/{@code max_format}, which gives a
+     * range of formats the pack works with, and the older {@code pack_format}, which names one
+     * exact format.</p>
+     *
+     * @return the range as {minMajor, minMinor, maxMajor, maxMinor}, or null when the file
+     *         says nothing usable
+     */
+    private static int[] readDeclaredPackFormat(File manifest) {
+        try {
+            org.bukkit.configuration.file.YamlConfiguration yaml =
+                    new org.bukkit.configuration.file.YamlConfiguration();
+            yaml.load(manifest);
+            org.bukkit.configuration.ConfigurationSection pack = yaml.getConfigurationSection("pack");
+            if (pack == null) {
+                return null;
+            }
+            // The older form names one exact format: the client reads it as a range whose
+            // two ends are the same value.
+            Object single = pack.get("pack_format");
+            if (single instanceof Number number) {
+                int major = number.intValue();
+                return new int[]{major, 0, major, 0};
+            }
+            // The newer form names a range of formats the pack works with.
+            Object min = pack.get("min_format");
+            Object max = pack.get("max_format");
+            if (!(min instanceof List<?> minList) || minList.isEmpty()) {
+                return null;
+            }
+            int minMajor = toInt(minList.get(0));
+            int minMinor = minList.size() > 1 ? toInt(minList.get(1)) : 0;
+            int maxMajor = minMajor;
+            int maxMinor = minMinor;
+            if (max instanceof List<?> maxList && !maxList.isEmpty()) {
+                maxMajor = toInt(maxList.get(0));
+                maxMinor = maxList.size() > 1 ? toInt(maxList.get(1)) : 0;
+            }
+            return new int[]{minMajor, minMinor, maxMajor, maxMinor};
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Turns a manifest number into an int, treating anything unreadable as zero.
+     */
+    private static int toInt(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    /**
+     * The resource pack format this server expects.
+     *
+     * <p>Paper does not expose it in the API, so it is read from the server's own constants.
+     * When that cannot be determined the check is skipped rather than guessed.</p>
+     *
+     * @return the expected format as {major, minor}, or null when it cannot be determined
+     */
+    private static int[] expectedPackFormat() {
+        try {
+            Class<?> constants = Class.forName("net.minecraft.SharedConstants");
+            int major = constants.getField("RESOURCE_PACK_FORMAT_MAJOR").getInt(null);
+            int minor = constants.getField("RESOURCE_PACK_FORMAT_MINOR").getInt(null);
+            return new int[]{major, minor};
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ex) {
+            // An older or newer server may not have these fields. The check is a courtesy, so
+            // a missing constant must not stop the plugin from starting.
+            return null;
         }
     }
 
