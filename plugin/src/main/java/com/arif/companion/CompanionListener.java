@@ -99,6 +99,11 @@ public final class CompanionListener implements Listener {
             plugin.getManager().denyEris(player);
             return;
         }
+        // Crouching while right-clicking changes Eris's mode instead of opening her pouch.
+        if (player.isSneaking()) {
+            cycleMode(player, "eris");
+            return;
+        }
         plugin.getManager().openErisPouch(player);
     }
 
@@ -131,7 +136,27 @@ public final class CompanionListener implements Listener {
             plugin.getManager().denyCompanion(player, archetype);
             return;
         }
+        // Crouching while right-clicking changes the companion's mode instead of opening her
+        // pouch. The cycle is Ikut, then Kesini, then Tunggu, and back to Ikut.
+        if (player.isSneaking()) {
+            cycleMode(player, archetype);
+            return;
+        }
         plugin.getManager().openCompanionPouch(player, archetype);
+    }
+
+    /**
+     * Moves the companion to her next mode and tells the owner which one that is.
+     *
+     * <p>Only the main hand counts, so a stray interaction with the off hand cannot switch
+     * the mode twice in a row.</p>
+     */
+    private void cycleMode(Player player, String archetype) {
+        if (plugin.getManager().cycleMode(player, archetype) == null) {
+            return;
+        }
+        CompanionManager.FollowMode mode = plugin.getManager().modeOf(player, archetype);
+        CompanionModeFeedback.announce(player, archetype, mode);
     }
 
     /** Remembers which mob a companion hit, so the kill can be credited to her owner. */

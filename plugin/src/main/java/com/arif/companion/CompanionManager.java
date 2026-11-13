@@ -3977,6 +3977,47 @@ public final class CompanionManager {
         return state == null ? null : state.mode;
     }
 
+    /**
+     * The name the owner knows a companion by.
+     */
+    public static String labelFor(String archetype) {
+        return switch (archetype.toLowerCase(Locale.ROOT)) {
+            case "yui" -> "Yui";
+            case "eris" -> "Eris";
+            case "furina" -> "Furina";
+            case "ei" -> "Ei";
+            case "columbina" -> "Columbina";
+            case "escoffier" -> "Escoffier";
+            default -> "Sandrone";
+        };
+    }
+
+    /**
+     * Moves a companion to the next mode in the cycle and reports the mode she is in now.
+     *
+     * <p>The cycle runs Ikut, then Kesini, then Tunggu, and back to Ikut. It is what a
+     * crouching right-click on the companion does, so the owner can change her behaviour
+     * without typing a command.</p>
+     *
+     * @param owner     the player who owns the companion
+     * @param archetype the companion's archetype
+     * @return the mode the companion is in now, or null when she is not out
+     */
+    public FollowMode cycleMode(Player owner, String archetype) {
+        FollowState state = followStates.get(
+                new CompanionKey(owner.getUniqueId(), archetype.toLowerCase(Locale.ROOT)));
+        if (state == null) {
+            return null;
+        }
+        FollowMode next = switch (state.mode) {
+            case FOLLOW -> FollowMode.CLOSE;
+            case CLOSE -> FollowMode.WAIT;
+            case WAIT -> FollowMode.FOLLOW;
+        };
+        setMode(owner, archetype, next);
+        return next;
+    }
+
     private void cancel(CompanionKey key) {
         cancel(key, companionOf(key));
     }

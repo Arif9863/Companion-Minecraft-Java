@@ -255,6 +255,16 @@ A companion has exactly one standing behaviour at a time. **The mode stays in fo
   you asked for.
 - The chosen mode is saved per player in `plugins/CompanionNPCs/modes.yml` and restored when the companion is respawned or the server restarts.
 
+### Changing the mode without a command
+
+**Crouch and right-click a companion** to move her to the next mode: Ikut → Kesini → Tunggu → Ikut.
+The chat says which mode she is in now. This works for all six companions of the group and for
+Eris.
+
+A plain right-click still opens her pouch, so the crouch is what tells the two apart. Only the
+owner can do this: anyone else gets the companion's own refusal, exactly as when opening the
+pouch.
+
 ## Movement rules
 
 All three companions — Yui, Sandrone, and Eris — share the same A* navigation and jump behavior. A parkour fix therefore applies to all three.
