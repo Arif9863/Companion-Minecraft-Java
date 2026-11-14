@@ -265,6 +265,11 @@ A plain right-click still opens her pouch, so the crouch is what tells the two a
 owner can do this: anyone else gets the companion's own refusal, exactly as when opening the
 pouch.
 
+The client sends an interaction for the main hand *and* one for the off hand when the player
+right-clicks, so both reach the server. Only the main hand is counted here — otherwise a single
+click would step the mode twice, which would name two modes at once and play the wait voice on
+the way past it.
+
 ## Movement rules
 
 All three companions — Yui, Sandrone, and Eris — share the same A* navigation and jump behavior. A parkour fix therefore applies to all three.

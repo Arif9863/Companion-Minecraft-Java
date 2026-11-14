@@ -511,6 +511,13 @@ public final class CompanionManager {
         private final Set<UUID> warnedHostiles = new HashSet<>();
         /** The standing behaviour of this companion: follow in formation, or stay close. */
         private FollowMode mode = FollowMode.FOLLOW;
+        /**
+         * Tick at which the mode was last changed by a crouching right-click.
+         *
+         * <p>The listener already drops the off-hand copy of a click; this keeps any other
+         * repeat from turning one decision into two steps of the mode cycle.</p>
+         */
+        private long lastCycleClickTick = Long.MIN_VALUE;
         /** The mob this companion is currently engaging, or null when none. */
         private UUID attackTarget;
         /** Tick at which the current attack target was picked, used for the grace period. */
@@ -3993,6 +4000,15 @@ public final class CompanionManager {
     }
 
     /**
+     * How long a repeated click on the same companion is ignored, in ticks.
+     *
+     * <p>The listener already drops the off-hand copy of a click. This is the second line of
+     * defence: it covers any repeat that still slips through, so one decision can never turn
+     * into two steps of the mode cycle.</p>
+     */
+    private static final long CYCLE_DEBOUNCE_TICKS = 4L;
+
+    /**
      * Moves a companion to the next mode in the cycle and reports the mode she is in now.
      *
      * <p>The cycle runs Ikut, then Kesini, then Tunggu, and back to Ikut. It is what a
@@ -4001,7 +4017,8 @@ public final class CompanionManager {
      *
      * @param owner     the player who owns the companion
      * @param archetype the companion's archetype
-     * @return the mode the companion is in now, or null when she is not out
+     * @return the mode the companion is in now, or null when she is not out or when this was
+     *         a repeat of a click that has just been handled
      */
     public FollowMode cycleMode(Player owner, String archetype) {
         FollowState state = followStates.get(
@@ -4009,6 +4026,12 @@ public final class CompanionManager {
         if (state == null) {
             return null;
         }
+        long now = Bukkit.getCurrentTick();
+        if (state.lastCycleClickTick != Long.MIN_VALUE
+                && now - state.lastCycleClickTick < CYCLE_DEBOUNCE_TICKS) {
+            return null;
+        }
+        state.lastCycleClickTick = now;
         FollowMode next = switch (state.mode) {
             case FOLLOW -> FollowMode.CLOSE;
             case CLOSE -> FollowMode.WAIT;

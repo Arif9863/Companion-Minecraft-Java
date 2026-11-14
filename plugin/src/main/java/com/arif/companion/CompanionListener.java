@@ -19,6 +19,7 @@ import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -101,7 +102,9 @@ public final class CompanionListener implements Listener {
         }
         // Crouching while right-clicking changes Eris's mode instead of opening her pouch.
         if (player.isSneaking()) {
-            cycleMode(player, "eris");
+            if (event.getHand() == EquipmentSlot.HAND) {
+                cycleMode(player, "eris");
+            }
             return;
         }
         plugin.getManager().openErisPouch(player);
@@ -139,7 +142,9 @@ public final class CompanionListener implements Listener {
         // Crouching while right-clicking changes the companion's mode instead of opening her
         // pouch. The cycle is Ikut, then Kesini, then Tunggu, and back to Ikut.
         if (player.isSneaking()) {
-            cycleMode(player, archetype);
+            if (event.getHand() == EquipmentSlot.HAND) {
+                cycleMode(player, archetype);
+            }
             return;
         }
         plugin.getManager().openCompanionPouch(player, archetype);
@@ -148,8 +153,9 @@ public final class CompanionListener implements Listener {
     /**
      * Moves the companion to her next mode and tells the owner which one that is.
      *
-     * <p>Only the main hand counts, so a stray interaction with the off hand cannot switch
-     * the mode twice in a row.</p>
+     * <p>Only the main hand counts. The client sends an interaction for the off hand as well
+     * when the player right-clicks, and treating that as a second click would step the mode
+     * twice and play the wait voice on the way past it.</p>
      */
     private void cycleMode(Player player, String archetype) {
         if (plugin.getManager().cycleMode(player, archetype) == null) {
