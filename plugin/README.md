@@ -218,6 +218,23 @@ hostile mob that is coming for its owner or for the companion itself, in every m
   mob drags it further than that radius from its spot, it drops the fight and walks back. Once the
   fight is over it returns to its spot and resumes its wander. Raising this radius widens the
   threats it reacts to; it does not change the 5-block idle wander.
+- **The leash is measured from the post, not from the companion.** A mob that has already pulled
+  the companion out of its post is not picked up again. Measured from the companion instead, the
+  same mob would pull it out again the moment it got back, and the companion would walk out and
+  back for ever instead of holding its ground. After letting a mob go, the companion has a
+  two-second pause before it takes on a new fight, so it can walk back to its post first.
+- **A companion does not chase a mob out of reach.** The mob has to stay within twice the attack
+  search radius of the *owner*. A companion that chases a mob which keeps running walks away from
+  its owner with it, and once it is out of reach there is no route back — it would be stuck
+  wherever the chase ended. Letting the mob go and walking back to the owner is what keeps the
+  companion where it belongs.
+- **A companion that cannot reach its target walks back instead of standing still.** When there
+  is no route to the mob, the companion looks for a route to its owner and takes that. A route
+  home exists far more often than a route to a fleeing mob, and it puts the companion back in
+  reach rather than leaving it wedged where the fight left it.
+- **A companion is never left standing still by a failed rescue.** If it has fallen too far
+  behind and the landing spot is not free, it carries on with the fight it was in rather than
+  giving up where it stands.
 - **It walks up to the mob and looks at it** while closing in, then keeps facing it while it
   strikes — so the fight reads like a player fighting, not like a turret.
 - **It swings like a player.** The arm animation is the player's own swing, played every
@@ -386,4 +403,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugin\run-tests.ps1
 `PlannerRulesTest` covers the carpet surface, the route past a door, the fence barrier and
 which blocks may be opened. `GapAheadTest` covers the gap check that used to mistake a
 carpet for a hole. `LineOfSightTest` covers the check that keeps a thrown trident from
-being aimed into a wall.
+being aimed into a wall. `ChaseRulesTest` covers the reach a companion will follow a mob to.

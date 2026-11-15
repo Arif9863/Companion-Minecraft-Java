@@ -255,7 +255,15 @@ public final class CompanionManager {
 
     /** How long Ei's spear thrust animation lasts, in ticks. */
     private static final int JAB_ANIMATION_TICKS = 4;
-    /** Extra random ticks so two companions never glance in lockstep. */
+
+    /**
+     * How long a waiting companion leaves a mob alone after it was pulled off its post, in ticks.
+     *
+     * <p>Two seconds is enough for the companion to walk back onto its post and start its
+     * wander again. Without the pause the same mob pulls it straight back out, and the
+     * companion walks out and back for ever instead of holding its ground.</p>
+     */
+    private static final long LEASH_BREAK_TICKS = 40L;    /** Extra random ticks so two companions never glance in lockstep. */
     private static final long GLANCE_DURATION_VARIANCE_TICKS = 20L;
     /** Idle ticks between two glance checks: 3-4 seconds, deliberately unhurried. */
     private static final long GLANCE_CHECK_INTERVAL_TICKS = 60L;
@@ -549,6 +557,14 @@ public final class CompanionManager {
         private UUID attackTarget;
         /** Tick at which the current attack target was picked, used for the grace period. */
         private long attackTargetTick = Long.MIN_VALUE;
+        /**
+         * Tick at which this companion let a mob go because the mob pulled it off its post.
+         *
+         * <p>For a moment after that, no new fight is picked up. The companion needs to walk
+         * back to its post first, and a mob that is still nearby would otherwise pull it out
+         * again the moment it arrived.</p>
+         */
+        private long leashBreakTick = Long.MIN_VALUE;
         /** Tick of the last swing, used to space the melee hits out. */
         private long lastSwingTick = Long.MIN_VALUE;
         /** Tick of the last ground footstep sound. */
@@ -1617,6 +1633,15 @@ public final class CompanionManager {
         if (state.mode == FollowMode.WAIT && state.waitSpot != null) {
             radius = plugin.waitThreatRadius() + WAIT_WANDER_RADIUS;
         }
+        // A companion that has just let a mob go because it was pulled off its post needs a
+        // moment to walk back before it fights again. Otherwise the same mob pulls it out
+        // again the moment it arrives, and the companion walks out and back for ever.
+        if (state.leashBreakTick != Long.MIN_VALUE
+                && Bukkit.getCurrentTick() - state.leashBreakTick < LEASH_BREAK_TICKS) {
+            return null;
+        }
+        // The companion is back on its post, so the break is over.
+        state.leashBreakTick = Long.MIN_VALUE;
         double radiusSquared = radius * radius;
 
         LivingEntity best = null;
@@ -1647,6 +1672,14 @@ public final class CompanionManager {
             if (!threatToParty && !territorial) {
                 continue;
             }
+            // A waiting companion is on a leash: it fights what comes inside the ground it
+            // holds, but it does not chase a mob out of that ground. A mob that has already
+            // pulled the companion away is not picked up again, so the companion does not
+            // walk out, drop the fight at the leash, and turn straight back to the same mob.
+            if (state.mode == FollowMode.WAIT && state.waitSpot != null
+                    && !withinLeash(living, state.waitSpot, plugin.waitThreatRadius())) {
+                continue;
+            }
             double distance = living.getLocation().distanceSquared(npcLocation);
             if (distance < bestDistance) {
                 bestDistance = distance;
@@ -1654,6 +1687,18 @@ public final class CompanionManager {
             }
         }
         return best;
+    }
+
+    /**
+     * Whether the mob is still inside the ground a waiting companion holds.
+     *
+     * <p>The leash is measured from the spot the companion was told to wait at, not from the
+     * companion itself. Measured from the companion, a mob that has already pulled it out of
+     * its post would still count as a target, and the companion would walk out again, drop
+     * the fight at the leash, and turn straight back to the same mob.</p>
+     */
+    private static boolean withinLeash(LivingEntity mob, Location waitSpot, double leash) {
+        return mob.getLocation().distanceSquared(waitSpot) <= leash * leash;
     }
 
     /**
@@ -1811,6 +1856,15 @@ public final class CompanionManager {
                     || currentTick - state.attackTargetTick <= ATTACK_TARGET_GRACE_TICKS;
             if (withinGrace && existing instanceof LivingEntity living
                     && living.isValid() && !living.isDead()) {
+                // A mob that has drawn the companion away from its owner is let go. The
+                // companion is not a stray that follows a mob across the map: it belongs to
+                // the owner, and a chase that leads out of reach leaves it stuck far away,
+                // unable to get back. A waiting companion is on its own leash instead.
+                if (state.mode != FollowMode.WAIT && isOutOfReach(owner, living)) {
+                    state.attackTarget = null;
+                    state.attackTargetTick = Long.MIN_VALUE;
+                    return null;
+                }
                 return living;
             }
         }
@@ -1825,6 +1879,33 @@ public final class CompanionManager {
         return found;
     }
 
+    /**
+     * Whether the mob has drawn the companion too far away from its owner.
+     *
+     * <p>The distance is measured from the owner, not from the companion. A companion that
+     * chases a mob which keeps running walks away from the owner with it, and once it is
+     * out of reach there is no route back — the companion is stuck wherever the chase ended.
+     * Letting the mob go at that point and walking back to the owner is what keeps the
+     * companion where it belongs.</p>
+     */
+    private boolean isOutOfReach(Player owner, LivingEntity mob) {
+        return isOutOfReach(mob.getLocation().distanceSquared(owner.getLocation()),
+                plugin.attackSearchRadius() * 2.0);
+    }
+
+    /**
+     * Whether the squared distance between a mob and the owner is beyond the reach a
+     * companion is willing to follow.
+     *
+     * <p>Kept separate from the world so the rule can be checked on its own.</p>
+     *
+     * @param squaredDistance the squared distance between the mob and the owner
+     * @param reach           the squared distance the companion is willing to follow
+     * @return true when the mob is too far away to be chased
+     */
+    static boolean isOutOfReach(double squaredDistance, double reach) {
+        return squaredDistance > reach * reach;
+    }
     /**
      * The spot the companion walks to in order to strike its target: within melee reach, on the
      * side the companion is already approaching from.
@@ -2363,12 +2444,21 @@ public final class CompanionManager {
             // A waiting companion is on a leash: it fights what comes inside the ground it holds,
             // but it does not follow a mob out of that ground. Once the mob pulls it too far from
             // its spot, the companion drops the fight and walks back to where it was told to wait.
+            //
+            // The fight is dropped when the companion itself has been pulled out of its post,
+            // not when the mob has. A mob that stands just outside the leash is still worth
+            // fighting from the edge of the post; a mob that has dragged the companion across
+            // the map is not. Dropping it there is what made the companion walk out, let the
+            // mob go, walk back, and be picked up by the same mob again.
             if (attackTarget != null && waitMode && state.waitSpot != null) {
                 double leash = plugin.waitThreatRadius();
                 if (npcLocation.distanceSquared(state.waitSpot) > leash * leash) {
                     attackTarget = null;
                     state.attackTarget = null;
                     state.attackTargetTick = Long.MIN_VALUE;
+                    // The mob is let go for a moment, so the companion can walk back to its post
+                    // without being pulled out again by the same fight.
+                    state.leashBreakTick = currentTick;
                     targetSpot = waitSpot(npc, state, currentTick);
                 }
             }
@@ -2422,8 +2512,12 @@ public final class CompanionManager {
             if (!waitMode
                     && ownerLocation.getY() - npcLocation.getY() >= EMERGENCY_FALL_DISTANCE
                     && npc.getVelocity().getY() <= 0.01) {
-                rescueTeleport(npc, owner, ownerLocation, state);
-                return;
+                if (rescueTeleport(npc, owner, ownerLocation, state)) {
+                    return;
+                }
+                // The rescue could not find a landing spot. Standing still would leave the
+                // companion stuck at the bottom of the ravine for good, so it carries on with
+                // what it was doing instead of giving up here.
             }
 
             // Emergency teleport. The threshold and the landing spot are mode-specific:
@@ -2431,8 +2525,12 @@ public final class CompanionManager {
             // owner's reachable room. Both use their own configured distance. A waiting
             // companion never needs catching up, so it is left alone entirely.
             if (!waitMode && distance > emergencyTeleportDistance(state.mode)) {
-                rescueTeleport(npc, owner, ownerLocation, state);
-                return;
+                if (rescueTeleport(npc, owner, ownerLocation, state)) {
+                    return;
+                }
+                // No landing spot was free. The companion goes on with the fight it was in
+                // rather than standing still: it is out of the owner's reach either way, and
+                // a companion that keeps fighting is far better than one that is stuck.
             }
 
             // Open doors ahead and close the ones already passed before steering.
@@ -2498,14 +2596,15 @@ public final class CompanionManager {
                     || currentTick - state.lastPlanTick >= replanInterval
                     || goalMoved));
 
+            // Combat may route down onto a hostile up to three blocks below. Following keeps
+            // the strict one-block descent so it never walks off a ravine while chasing.
+            boolean combatDrop = attackTarget != null;
+            // When the owner stands lower down, the companion comes down after him instead of
+            // giving up: the descent is still checked for a clear shaft and a solid floor.
+            boolean ownerBelow = ownerLocation.getY() < npcLocation.getY() - 1.0;
+
             if (needsReplan) {
                 state.lastAttemptTick = currentTick;
-                // Combat may route down onto a hostile up to three blocks below. Following keeps
-                // the strict one-block descent so it never walks off a ravine while chasing.
-                boolean combatDrop = attackTarget != null;
-                // When the owner stands lower down, the companion comes down after him instead of
-                // giving up: the descent is still checked for a clear shaft and a solid floor.
-                boolean ownerBelow = ownerLocation.getY() < npcLocation.getY() - 1.0;
                 // Parkour is always allowed: a player clears a three-block gap with a jump, and
                 // the companion should be able to follow across the same ravine.
                 state.path = PathPlanner.findPath(npc.getWorld(), npcLocation, targetSpot,
@@ -2531,13 +2630,38 @@ public final class CompanionManager {
                 }
                 if (!waitMode && !npc.isInWater()
                         && currentTick - state.noPathSinceTick >= NO_PATH_RESCUE_TICKS) {
-                    rescueTeleport(npc, owner, ownerLocation, state);
+                    if (rescueTeleport(npc, owner, ownerLocation, state)) {
+                        return;
+                    }
+                    // No landing spot was free for the rescue. The companion is out of reach
+                    // anyway, so it goes on with the fight it was in instead of standing still
+                    // for good.
+                }
+                // There is no route to the spot the companion was aiming for. That spot is
+                // usually the mob it is chasing, and the mob may have drawn it somewhere it
+                // cannot get back from. Rather than standing still for ever, the companion
+                // tries to make its way back towards the owner: a route to the owner exists
+                // far more often than a route to a fleeing mob, and it puts the companion
+                // back in reach instead of leaving it wedged where the fight left it.
+                if (attackTarget != null && !waitMode) {
+                    Location backToOwner = formationSpot(npc, owner, state, closeMode);
+                    if (backToOwner != null && !backToOwner.equals(targetSpot)
+                            && hasWalkableRoute(npc.getWorld(), npcLocation, backToOwner)) {
+                        state.path = PathPlanner.findPath(npc.getWorld(), npcLocation, backToOwner,
+                                PATH_RADIUS, combatDrop, ownerBelow, true);
+                        state.waypointIndex = 0;
+                        clearParkourState(state);
+                        state.plannedGoal = backToOwner.clone();
+                        state.lastPlanTick = currentTick;
+                    }
+                }
+                if (state.path.isEmpty()) {
+                    org.bukkit.util.Vector velocity = npc.getVelocity();
+                    npc.setVelocity(new org.bukkit.util.Vector(velocity.getX() * 0.35, velocity.getY(),
+                            velocity.getZ() * 0.35));
+                    applyGaze(npc, owner, state, state.lastWalkingYaw, true, true);
                     return;
                 }
-                org.bukkit.util.Vector velocity = npc.getVelocity();
-                npc.setVelocity(new org.bukkit.util.Vector(velocity.getX() * 0.35, velocity.getY(), velocity.getZ() * 0.35));
-                applyGaze(npc, owner, state, state.lastWalkingYaw, true, true);
-                return;
             }
             // A route exists again, so the rescue timer is cleared.
             state.noPathSinceTick = Long.MIN_VALUE;
@@ -3658,17 +3782,27 @@ public final class CompanionManager {
             state.waitSpotPaused = false;
             state.waitNextTurnTick = Long.MIN_VALUE;
             Location home = state.waitSpot.clone();
-            // Aim a little past the anchor so the companion does not hover on the rim of it.
-            Location back = new Location(npc.getWorld(),
-                    home.getX() - anchorDx / anchorDistance * 1.5,
-                    home.getY(),
-                    home.getZ() - anchorDz / anchorDistance * 1.5);
             // The way back has to be walked around, not through. A companion that was pulled
             // behind a fence walks around it, so it needs a route; without one it stays put
             // instead of shoving through the barrier on the way home.
-            if (hasWalkableRoute(npc.getWorld(), npcLocation, back)) {
-                return back;
+            //
+            // Several points on the way are tried, not just one. The spot just past the anchor
+            // may be the one block that cannot be reached — a hole in the ground, a bed, a
+            // fence — while the anchor itself is perfectly reachable. Stopping at the first
+            // unreachable point left the companion standing where the fight dropped it,
+            // for good.
+            for (double overshoot : new double[]{1.5, 0.5, 0.0, 3.0}) {
+                Location back = new Location(npc.getWorld(),
+                        home.getX() - anchorDx / anchorDistance * overshoot,
+                        home.getY(),
+                        home.getZ() - anchorDz / anchorDistance * overshoot);
+                if (hasWalkableRoute(npc.getWorld(), npcLocation, back)) {
+                    return back;
+                }
             }
+            // The post itself cannot be walked back to from here. The companion stays where
+            // it is rather than shoving through whatever is in the way, and it keeps watching
+            // the ground it was told to hold.
             return npcLocation.clone();
         }
         // Resting between strolls: the companion stands still for a moment, the way a mob idles.
@@ -3797,7 +3931,21 @@ public final class CompanionManager {
     }
 
     /** Teleports the companion to its mode-specific target, closing its doors and resetting route state. */
-    private void rescueTeleport(Mannequin npc, Player owner, Location ownerLocation, FollowState state) {
+    /**
+     * Brings a companion back to its owner after it has fallen too far behind.
+     *
+     * <p>Only the doors this companion opened are closed. Doors the other companion is still
+     * using must stay open, or that one gets shut inside a doorway.</p>
+     *
+     * <p>Never replace an unreachable mode target with an arbitrary side spot: that fallback
+     * was the original way a close-mode rescue could land on the opposite side of a wall. If
+     * the selected landing point is not clear, the companion is left where it is and the
+     * caller carries on with the fight instead of standing still.</p>
+     *
+     * @return true when the companion was moved
+     */
+    private boolean rescueTeleport(Mannequin npc, Player owner, Location ownerLocation,
+                                   FollowState state) {
         // Only the doors this companion opened are closed. Doors the other companion is still
         // using must stay open, or that one gets shut inside a doorway.
         for (Location door : state.openedDoors) {
@@ -3811,12 +3959,12 @@ public final class CompanionManager {
         // selected landing point is not clear, leave the companion where it is and retry later.
         Location spot = formationSpot(npc, owner, state, state.mode == FollowMode.CLOSE);
         if (spot == null || spot.getWorld() == null || !isFreeForCompanion(spot)) {
-            return;
+            return false;
         }
         // Lower only within this same column, and only when the landing block remains clear.
         Location floorSpot = dropToFloor(spot, ownerLocation);
         if (floorSpot == null || !isFreeForCompanion(floorSpot)) {
-            return;
+            return false;
         }
         npc.teleport(floorSpot);
         npc.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
@@ -3825,6 +3973,12 @@ public final class CompanionManager {
         state.waypointIndex = 0;
         state.lastProgressPosition = null;
         state.sideStepAttempts = 0;
+        // The fight the companion was in is over: it has been pulled back to its owner, so it
+        // must not keep aiming at a mob that is now far away. Leaving the target in place
+        // made the companion walk straight back out to it, and the rescue repeated for ever.
+        state.attackTarget = null;
+        state.attackTargetTick = Long.MIN_VALUE;
+        return true;
     }
 
     /** Closes the doors one companion still holds open. */

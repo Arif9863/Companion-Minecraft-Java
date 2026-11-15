@@ -15,8 +15,12 @@ if (-not $apiJar) {
     exit 1
 }
 $deps = @(Get-ChildItem -Path $paperRoot -Recurse -Filter '*.jar' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -notlike '*\plugins\*' } |
     ForEach-Object { $_.FullName })
-$cp = (@($deps) + @($apiJar.FullName) + @((Join-Path $buildDir 'classes'))) -join ';'
+# The compiled classes come first: a copy of the plugin left in the server's plugin folder
+# would otherwise sit in front of them on the classpath and the tests would be run against
+# an older build.
+$cp = (@((Join-Path $buildDir 'classes')) + @($deps) + @($apiJar.FullName)) -join ';'
 
 $javac = 'C:\Program Files\Java\jdk-25.0.5.0.2\bin\javac.exe'
 $java = 'C:\Program Files\Java\jdk-25.0.5.0.2\bin\java.exe'
@@ -30,7 +34,7 @@ $testFiles = @(Get-ChildItem -Path $testSrc -Recurse -Filter '*.java' | ForEach-
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 foreach ($name in @('com.arif.companion.PlannerRulesTest', 'com.arif.companion.GapAheadTest',
-                    'com.arif.companion.LineOfSightTest')) {
+                    'com.arif.companion.LineOfSightTest', 'com.arif.companion.ChaseRulesTest')) {
     Write-Host ""
     Write-Host "== $name =="
     & $java -cp "$testOut;$cp" $name
