@@ -15,7 +15,6 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.Openable;
-import org.bukkit.block.data.type.Door;
 import org.bukkit.block.data.type.Gate;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -179,21 +178,19 @@ public final class CompanionManager {
     private static final long FAILED_PLAN_RETRY_TICKS = 20L;
     private static final int PATH_RADIUS = 48;
     /**
-     * How close a door must be before the companion opens it.
+     * How far ahead on its route the companion looks for a door to open.
      *
-     * <p>2 blocks: close enough to walk into, tight enough that a door in the next room or
-     * merely within earshot stays shut.</p>
+     * <p>Four waypoints is far enough to see a door that the companion is about to walk into,
+     * and short enough that a door it has already walked past is not reopened.</p>
      */
-    private static final double DOOR_OPEN_DISTANCE_SQUARED = 4.0;
+    private static final int DOOR_LOOKAHEAD_WAYPOINTS = 4;
     /**
-     * How far past a door the companion must be before the door is closed again.
+     * How close the companion has to be to a door before it works it.
      *
-     * <p>3.5 blocks — comfortably more than the open radius. A door may only be shut once the
-     * companion has genuinely walked through it. Closing it sooner makes the door swing shut into
-     * the companion, which bounces it back and leaves it opening and closing the door forever
-     * without ever getting through.</p>
+     * <p>2.5 blocks across the floor: far enough to reach out for the handle, tight enough that
+     * a door around the corner stays shut until the companion is really there.</p>
      */
-    private static final double DOOR_CLOSE_DISTANCE_SQUARED = 12.25;
+    private static final double DOOR_REACH_SQUARED = 6.25;
     /**
      * How long a door may stay open waiting for a companion that is still on the way.
      *
@@ -209,13 +206,6 @@ public final class CompanionManager {
      * it open.</p>
      */
     private static final double DOOR_PENDING_DISTANCE_SQUARED = 36.0;
-    /**
-     * Minimum dot product between the direction to the owner and the direction to a door.
-     *
-     * <p>0 means the door has to be directly ahead; a little slack lets a door slightly off to
-     * the side still be opened when it really is the way through.</p>
-     */
-    private static final double DOOR_DIRECTION_THRESHOLD = -0.25;
     /**
      * Maximum angle between the companion's body direction and the mob it glances at.
      *
@@ -648,14 +638,18 @@ public final class CompanionManager {
 
     private final CompanionNpcsPlugin plugin;
     /**
-     * A door a companion has opened, plus the direction it was passed through.
+     * A door a companion is looking after, together with what it needs to know to shut it again.
+     *
+     * <p>The way the door was crossed is kept in the form the companion actually experienced it:
+     * the axis it was travelling along and the side of the threshold it started from. That is
+     * what tells a door that has been walked through from one that is merely still ahead.</p>
      *
      * @param axisX horizontal component of the travel direction across the doorway
      * @param axisZ horizontal component of the travel direction across the doorway
-     * @param side  which side of the doorway the companion stood on when opening it
+     * @param side  which side of the doorway the companion stood on when it claimed the door
      * @param originX companion's horizontal position when the door was claimed
      * @param originZ companion's horizontal position when the door was claimed
-     * @param openedTick tick at which the door was claimed, used for the hold timeout
+     * @param openedTick tick at which the door was claimed
      */
     private record DoorHold(double axisX, double axisZ, double side,
                             double originX, double originZ, long openedTick) {}
@@ -2606,14 +2600,6 @@ public final class CompanionManager {
                 // a companion that keeps fighting is far better than one that is stuck.
             }
 
-            // Open doors ahead and close the ones already passed before steering.
-            // The companion only touches doors while it is actually moving, and only the ones
-            // that lie on the way to its own goal.
-            double currentSpeed = Math.sqrt(npc.getVelocity().getX() * npc.getVelocity().getX()
-                    + npc.getVelocity().getZ() * npc.getVelocity().getZ());
-            boolean moving = currentSpeed > STILL_SPEED;
-            updateDoors(npcLocation, state, moving, targetDx, targetDz);
-
             // While fighting, two independent distances apply. Resting is decided by the closer
             // stop distance, but a swing is allowed at the full vanilla reach — otherwise a
             // companion settled a whisker outside reach would stand there holding its sword and
@@ -2649,6 +2635,10 @@ public final class CompanionManager {
                     // Standing its ground within reach: this is where the strike happens.
                     swingAtTarget(npc, owner, attackTarget, state, currentTick);
                 }
+                // A companion that has arrived still has to shut the door it just walked
+                // through. The door it is standing in stays open, but a door further back
+                // along the route is closed now that it is no longer on it.
+                closePassedDoors(npcLocation, state);
                 return;
             }
 
@@ -2687,6 +2677,14 @@ public final class CompanionManager {
                 state.plannedGoal = targetSpot.clone();
                 state.lastPlanTick = currentTick;
             }
+
+            // Open the doors on the route and close the ones already passed. This runs after the
+            // route has been settled, so the doors it works on are the ones on the route the
+            // companion is actually walking now, not the route of the previous tick.
+            double currentSpeed = Math.sqrt(npc.getVelocity().getX() * npc.getVelocity().getX()
+                    + npc.getVelocity().getZ() * npc.getVelocity().getZ());
+            boolean moving = currentSpeed > STILL_SPEED;
+            updateDoors(npcLocation, state, moving, targetDx, targetDz);
 
             // If no A* route exists, do not steer straight through a wall towards the target.
             // Stay still and retry planning shortly; only a mode-specific distance rescue may move
@@ -2775,7 +2773,7 @@ public final class CompanionManager {
             // Remember the direction of travel so doors somebody else opened can be adopted.
             state.lastGoalDx = wx;
             state.lastGoalDz = wz;
-            adoptOpenDoors(npcLocation, state);
+            adoptOpenDoors(npc.getWorld(), state, npcLocation);
 
             // Track progress so a companion wedged against geometry can be rescued.
             if (state.lastProgressPosition == null || movedSince(state.lastProgressPosition, npcLocation)) {
@@ -3375,20 +3373,25 @@ public final class CompanionManager {
     }
 
     /**
-     * Opens closed doors and fence gates on the companion's way, and closes any door it has
-     * already walked through, so the route through a house is left as it was found.
+     * Opens the doors on the companion's route and closes the ones it has already walked through,
+     * so a house is left as it was found.
      *
-     * <p>Four rules keep this from becoming an open invitation for hostile mobs:</p>
+     * <p>The door is found the way a villager finds it: on the route the companion is actually
+     * walking, not merely nearby. A companion standing beside a door it has no intention of
+     * walking through — a waiting companion wandering inside a house, for instance — never
+     * touches it, because that door is not on its path. Previously the door was picked up by
+     * proximity and a rough direction check, which opened doors the companion then walked away
+     * from and left standing open.</p>
+     *
+     * <p>Three rules keep this from becoming an open invitation for hostile mobs:</p>
      * <ol>
      *   <li>a door is only opened while the companion is actually <b>moving</b> — a companion
      *       standing still beside its owner never forces a door open, which is what used to let
      *       creepers walk into a house that was already sealed;</li>
-     *   <li>the door must lie <b>between the companion and its owner</b>, so a door in the next
-     *       room or behind the wall is left alone;</li>
-     *   <li>only doors within {@link #DOOR_OPEN_DISTANCE_SQUARED} qualify — close enough to walk
-     *       into, not merely nearby;</li>
-     *   <li>doors the companion opened are closed again as soon as it stops, so a house the
-     *       player is resting in ends up sealed.</li>
+     *   <li>the door has to lie <b>on the route</b>, which means the companion really does walk
+     *       through it rather than merely passing the doorway;</li>
+     *   <li>doors the companion opened are closed again as soon as it has crossed them, so a
+     *       house the player is resting in ends up sealed.</li>
      * </ol>
      */
     private void updateDoors(Location npcLocation, FollowState state,
@@ -3398,76 +3401,190 @@ public final class CompanionManager {
             return;
         }
 
-        // Close anything the companion already crossed. A door still within the open radius stays
-        // open: the companion is standing at its threshold, and closing it there would only shut
-        // onto the companion itself.
-        if (!moving) {
-            // Doors somebody else left open are still adopted, so a room the owner forgot to close
-            // gets tidied up even while the companion is standing still.
-            adoptOpenDoors(npcLocation, state);
-            closeHeldDoors(world, npcLocation, state);
+        // A door that is still on the companion's route is left open — it is either still ahead
+        // of it or the one it is standing in.
+        List<Location> onRoute = doorsOnRoute(world, state);
+        closeHeldDoors(world, npcLocation, state, onRoute);
+
+        // A companion that is not moving has no route worth following: it is standing still, so
+        // it is not about to walk through anything. It must not force a door open — that is what
+        // used to let creepers walk into a house that was already sealed.
+        if (!moving || state.path.isEmpty()) {
             return;
         }
 
-        // Open closed doors or gates the companion is about to pass through.
-        int bx = npcLocation.getBlockX();
-        int by = npcLocation.getBlockY();
-        int bz = npcLocation.getBlockZ();
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                for (int dy = 0; dy <= 1; dy++) {
-                    Block block = world.getBlockAt(bx + dx, by + dy, bz + dz);
-                    if (!isDoorOrGate(block)) {
-                        continue;
-                    }
-                    if (!(block.getBlockData() instanceof Openable openable) || openable.isOpen()) {
-                        continue;
-                    }
-                    double ddx = block.getX() + 0.5 - npcLocation.getX();
-                    double ddz = block.getZ() + 0.5 - npcLocation.getZ();
-                    if (ddx * ddx + ddz * ddz > DOOR_OPEN_DISTANCE_SQUARED) {
-                        continue;
-                    }
-                    // Rule 2: the door has to be on the way to the companion's own goal — the spot
-                    // it is heading for, not the owner. The two differ once the companion aims at
-                    // its side of the formation, and using the owner's direction there left doors
-                    // shut in the face of the second companion.
-                    if (!isBetween(npcLocation, goalDx, goalDz, ddx, ddz)) {
-                        continue;
-                    }
-                    setDoorState(block, true);
-                    if (dy == 0) {
-                        state.openedDoors.add(block.getLocation());
-                        // Remember the direction of travel and which side the companion was on,
-                        // so the door can be closed once it has genuinely crossed the threshold.
-                        double axisLength = Math.sqrt(goalDx * goalDx + goalDz * goalDz);
-                        double axisX = axisLength < 1.0E-3 ? 0.0 : goalDx / axisLength;
-                        double axisZ = axisLength < 1.0E-3 ? 0.0 : goalDz / axisLength;
-                        double side = (ddx * axisX + ddz * axisZ) >= 0.0 ? 1.0 : -1.0;
-                        sharedOpenDoors.put(block.getLocation(), new DoorHold(axisX, axisZ, side,
-                                npcLocation.getX(), npcLocation.getZ(), Bukkit.getCurrentTick()));
-                    }
-                }
+        // Open closed doors or gates that lie on the route the companion is walking and that it
+        // has actually reached. The route is read from the waypoints ahead of the companion, and
+        // the companion has to be at the door as well: a door two rooms further down the route
+        // is left alone until the companion gets there.
+        for (Location door : doorsWithinReach(world, state.path, state.waypointIndex, npcLocation)) {
+            Block block = door.getBlock();
+            if (!(block.getBlockData() instanceof Openable openable) || openable.isOpen()) {
+                continue;
             }
+            setDoorState(block, true);
+            state.openedDoors.add(door);
+            // Remember the direction of travel and which side the companion was on, so the door
+            // can be closed once it has genuinely crossed the threshold.
+            double axisLength = Math.sqrt(goalDx * goalDx + goalDz * goalDz);
+            double axisX = axisLength < 1.0E-3 ? 0.0 : goalDx / axisLength;
+            double axisZ = axisLength < 1.0E-3 ? 0.0 : goalDz / axisLength;
+            double ddx = door.getX() + 0.5 - npcLocation.getX();
+            double ddz = door.getZ() + 0.5 - npcLocation.getZ();
+            double side = (ddx * axisX + ddz * axisZ) >= 0.0 ? 1.0 : -1.0;
+            sharedOpenDoors.put(door, new DoorHold(axisX, axisZ, side,
+                    npcLocation.getX(), npcLocation.getZ(), Bukkit.getCurrentTick()));
         }
-
-        // Close doors once the companion has passed through them.
-        closeHeldDoors(world, npcLocation, state);
     }
 
     /**
-     * Closes doors the companion opened.
+     * The doors and fence gates that lie on the route the companion is walking.
+     *
+     * <p>The route is the list of waypoints ahead of the companion. A waypoint names the block
+     * the companion stands on; a door is one block above it, so a wooden door standing in a
+     * doorway shows up as the block above the waypoint. Only the waypoints the companion is
+     * about to reach are looked at — far enough ahead to open a door in time, close enough that
+     * a door the companion has already passed is not reopened.</p>
+     *
+     * <p>An already open door is reported as well, so a door the owner left open is remembered
+     * and shut again once the companion has walked through it. That matches what a villager
+     * does, and it is what keeps a house from being left open at night.</p>
+     *
+     * @return the doors on the route, in the order they are met
+     */
+    private List<Location> doorsOnRoute(World world, FollowState state) {
+        return doorsOnRoute(world, state.path, state.waypointIndex);
+    }
+
+    /**
+     * The doors and fence gates that lie on a route, found from the waypoints ahead.
+     *
+     * <p>Kept apart from the companion's own state so the rule can be checked on its own: a
+     * companion standing beside a door it has no intention of walking through must leave it
+     * alone, and the only thing that proves that is the route itself.</p>
+     *
+     * <p>A waypoint names the block the companion stands on. A door standing in a doorway is
+     * its own block, so it is looked for at the waypoint's own height and one below it — the
+     * waypoint height is the top of the door's shape, which is one block above the doorway.</p>
+     *
+     * @param world         the world the route is in
+     * @param path          the route, as waypoints from the companion towards its goal
+     * @param waypointIndex the waypoint the companion is heading for
+     * @return the doors on the route, in the order they are met
+     */
+    static List<Location> doorsOnRoute(World world, List<org.bukkit.util.Vector> path,
+                                       int waypointIndex) {
+        List<Location> doors = new ArrayList<>();
+        if (path == null || path.isEmpty()) {
+            return doors;
+        }
+        int last = Math.min(path.size(), waypointIndex + DOOR_LOOKAHEAD_WAYPOINTS);
+        for (int i = Math.max(0, waypointIndex); i < last; i++) {
+            org.bukkit.util.Vector waypoint = path.get(i);
+            int x = (int) Math.floor(waypoint.getX());
+            int z = (int) Math.floor(waypoint.getZ());
+            int feet = blockOfWaypoint(waypoint);
+            // A door in a doorway is a block of its own, and the companion walks through it.
+            // The door's lower half is the block the companion stands in and its upper half
+            // sits one block above it.
+            for (int dy = 0; dy <= 1; dy++) {
+                Block block = world.getBlockAt(x, feet + dy, z);
+                if (!isDoorOrGate(block)) {
+                    continue;
+                }
+                Location door = new Location(world, x, feet + dy, z);
+                if (!doors.contains(door)) {
+                    doors.add(door);
+                }
+            }
+        }
+        return doors;
+    }
+
+    /**
+     * The block the companion's feet are in when it stands on the given waypoint.
+     *
+     * <p>A waypoint carries the height the feet rest at, which is the top of whatever the
+     * companion is standing on. A full block — and a closed door, whose shape fills its own
+     * block — ends at a whole number, so the block it is is one below. A carpet or a slab ends
+     * in between, and the block it is in is the one it starts in.</p>
+     */
+    static int blockOfWaypoint(org.bukkit.util.Vector waypoint) {
+        double height = waypoint.getY();
+        int whole = (int) Math.floor(height);
+        if (height == whole) {
+            return whole - 1;
+        }
+        return whole;
+    }
+
+    /**
+     * The doors on the route that the companion is close enough to open.
+     *
+     * <p>A door is only opened when the companion has actually arrived at it. Without that a
+     * companion saw a door two rooms away on its route and opened it early, which left a house
+     * standing open with nobody near the door — and a waiting companion wandering inside a
+     * house opened the door beside it although its route led elsewhere entirely.</p>
+     *
+     * @param companion where the companion is standing right now
+     * @return the doors on the route that are within reach
+     */
+    static List<Location> doorsWithinReach(World world, List<org.bukkit.util.Vector> path,
+                                           int waypointIndex, Location companion) {
+        List<Location> reachable = new ArrayList<>();
+        for (Location door : doorsOnRoute(world, path, waypointIndex)) {
+            if (withinReach(door, companion)) {
+                reachable.add(door);
+            }
+        }
+        return reachable;
+    }
+
+    /**
+     * Whether the companion is close enough to the door to work it.
+     *
+     * <p>Measured across the floor, the way a player reaches for a door. A door on the route
+     * but still around the corner is left alone until the companion gets there.</p>
+     */
+    private static boolean withinReach(Location door, Location companion) {
+        if (companion == null || companion.getWorld() == null) {
+            return false;
+        }
+        double dx = door.getX() + 0.5 - companion.getX();
+        double dz = door.getZ() + 0.5 - companion.getZ();
+        return dx * dx + dz * dz <= DOOR_REACH_SQUARED;
+    }
+
+    /**
+     * Closes the doors the companion has walked through, once it has stopped moving.
+     *
+     * <p>Used when the companion has arrived: it is no longer walking the route, so the door it
+     * came through is behind it and can be shut. The door it is standing in stays open.</p>
+     */
+    private void closePassedDoors(Location npcLocation, FollowState state) {
+        World world = npcLocation.getWorld();
+        if (world == null) {
+            return;
+        }
+        closeHeldDoors(world, npcLocation, state, List.of());
+    }
+
+    /**
+     * Closes doors the companion has walked through.
      *
      * <p>Doors are keyed per-position in a shared map rather than per-companion lists: the first
      * companion opens a door, the second walks through it, the first closing it from the far side
      * must not re-open it under the second's feet.</p>
      *
-     * <p>A door is only shut once the companion has genuinely crossed it — the doorway is between
-     * where the companion was and where it is now — and nobody is standing in the doorway. The
-     * owner's distance is deliberately irrelevant: the owner is usually standing right beside the
-     * door they just closed, and using that as a condition meant the door never shut at all.</p>
+     * <p>A door is shut once it is no longer on the companion's route — the companion has gone
+     * past it — and nobody is standing in the doorway. The owner's distance is deliberately
+     * irrelevant: the owner is usually standing right beside the door they just closed, and
+     * using that as a condition meant the door never shut at all.</p>
+     *
+     * @param onRoute the doors the companion is still going to walk through
      */
-    private List<Location> closeHeldDoors(World world, Location npcLocation, FollowState state) {
+    private List<Location> closeHeldDoors(World world, Location npcLocation, FollowState state,
+                                          List<Location> onRoute) {
         List<Location> closed = new ArrayList<>();
         if (sharedOpenDoors.isEmpty()) {
             return closed;
@@ -3481,13 +3598,18 @@ public final class CompanionManager {
             if (!world.equals(door.getWorld())) {
                 continue;
             }
-            boolean expired = currentTick - hold.openedTick() >= DOOR_HOLD_TIMEOUT_TICKS;
-            if (!expired && !crossedThreshold(door, hold, npcLocation)) {
+            // A door that is still on the companion's route is either ahead of it or the one it
+            // is standing in. Either way it stays open.
+            if (onRoute.contains(door)) {
                 continue;
             }
             // A companion that has not crossed yet must not close its own door. Another party
             // companion may still be approaching it; keep it open until that companion passes or
             // the bounded timeout expires.
+            boolean expired = currentTick - hold.openedTick() >= DOOR_HOLD_TIMEOUT_TICKS;
+            if (!expired && !crossedThreshold(door, hold, npcLocation)) {
+                continue;
+            }
             if (!expired && isAnyCompanionApproachingDoor(door, hold)) {
                 continue;
             }
@@ -3505,9 +3627,13 @@ public final class CompanionManager {
     }
 
     /**
-     * Keep a door open while another live companion is still on the starting side and close enough
-     * to be approaching it. Also preserve an already-open door somebody else is using; it will be
-     * adopted by that companion and closed after it crosses the threshold.
+     * Keep a door open while another live companion is still going to walk through it.
+     *
+     * <p>The test is on that companion's route, not on how far away it happens to be. A
+     * companion that is merely walking past in the same direction used to hold the door open
+     * for as long as the timeout, which is why a door could stay open far longer than it
+     * should. A companion that is actually going to walk through the door still gets it held
+     * open for it.</p>
      */
     private boolean isAnyCompanionApproachingDoor(Location door, DoorHold hold) {
         for (Map.Entry<CompanionKey, FollowState> entry : followStates.entrySet()) {
@@ -3518,6 +3644,13 @@ public final class CompanionManager {
                     || !door.getWorld().equals(npc.getWorld())) {
                 continue;
             }
+            FollowState other = entry.getValue();
+            // The door is held open for a companion that is going to walk through it.
+            if (doorsOnRoute(door.getWorld(), other).contains(door)) {
+                return true;
+            }
+            // A companion that is already in the doorway still needs it open, even if its route
+            // does not name the door any more: it is standing right there.
             Location position = npc.getLocation();
             double dx = position.getX() - (door.getX() + 0.5);
             double dz = position.getZ() - (door.getZ() + 0.5);
@@ -3559,57 +3692,40 @@ public final class CompanionManager {
     }
 
     /**
-     * Adopts doors that somebody else left open near the companion.
+     * Adopts doors that somebody else left open and that the companion is about to walk through.
      *
      * <p>The owner opens doors all the time and does not always close them, and a companion that
-     * walked through one of those leaves an open door behind that lets mobs in at night. So any
-     * open door the companion walks past is claimed — it gets closed once the companion has moved
-     * well beyond it, exactly like doors the companion opened itself.</p>
+     * walked through one of those leaves an open door behind that lets mobs in at night. So an
+     * open door the companion reaches on its route is claimed — it gets closed once the
+     * companion has moved well beyond it, exactly like doors the companion opened itself.</p>
+     *
+     * <p>Only doors on the route are adopted. A door the companion merely walks past in another
+     * room is left exactly as it was found: tidying up the whole house is not the companion's
+     * job, and a door it was never going to walk through is not its business.</p>
      */
-    private void adoptOpenDoors(Location npcLocation, FollowState state) {
-        World world = npcLocation.getWorld();
-        if (world == null) {
-            return;
-        }
-        int bx = npcLocation.getBlockX();
-        int by = npcLocation.getBlockY();
-        int bz = npcLocation.getBlockZ();
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                for (int dy = 0; dy <= 1; dy++) {
-                    Block block = world.getBlockAt(bx + dx, by + dy, bz + dz);
-                    // Only doors and fence gates are adopted. A trapdoor that somebody left open
-                    // is decoration, and closing it behind the companion would change how the
-                    // owner's house looks for no reason.
-                    if (!isDoorOrGate(block)) {
-                        continue;
-                    }
-                    if (!(block.getBlockData() instanceof Openable openable) || !openable.isOpen()) {
-                        continue;
-                    }
-                    Location door = block.getLocation();
-                    if (sharedOpenDoors.containsKey(door) || state.openedDoors.contains(door)) {
-                        continue; // already tracked — ours, or another companion's
-                    }
-                    double ddx = block.getX() + 0.5 - npcLocation.getX();
-                    double ddz = block.getZ() + 0.5 - npcLocation.getZ();
-                    if (ddx * ddx + ddz * ddz > DOOR_OPEN_DISTANCE_SQUARED) {
-                        continue;
-                    }
-                    // Direction of travel is the direction to the companion's next waypoint.
-                    double axisLength = Math.sqrt(state.lastGoalDx * state.lastGoalDx
-                            + state.lastGoalDz * state.lastGoalDz);
-                    if (axisLength < 1.0E-3) {
-                        continue;
-                    }
-                    double axisX = state.lastGoalDx / axisLength;
-                    double axisZ = state.lastGoalDz / axisLength;
-                    double side = (ddx * axisX + ddz * axisZ) >= 0.0 ? 1.0 : -1.0;
-                    state.openedDoors.add(door);
-                    sharedOpenDoors.put(door, new DoorHold(axisX, axisZ, side,
-                            npcLocation.getX(), npcLocation.getZ(), Bukkit.getCurrentTick()));
-                }
+    private void adoptOpenDoors(World world, FollowState state, Location npcLocation) {
+        for (Location door : doorsWithinReach(world, state.path, state.waypointIndex, npcLocation)) {
+            Block block = door.getBlock();
+            if (!(block.getBlockData() instanceof Openable openable) || !openable.isOpen()) {
+                continue;
             }
+            if (sharedOpenDoors.containsKey(door) || state.openedDoors.contains(door)) {
+                continue; // already tracked — ours, or another companion's
+            }
+            // Direction of travel is the direction to the companion's next waypoint.
+            double axisLength = Math.sqrt(state.lastGoalDx * state.lastGoalDx
+                    + state.lastGoalDz * state.lastGoalDz);
+            if (axisLength < 1.0E-3) {
+                continue;
+            }
+            double axisX = state.lastGoalDx / axisLength;
+            double axisZ = state.lastGoalDz / axisLength;
+            double ddx = door.getX() + 0.5 - npcLocation.getX();
+            double ddz = door.getZ() + 0.5 - npcLocation.getZ();
+            double side = (ddx * axisX + ddz * axisZ) >= 0.0 ? 1.0 : -1.0;
+            state.openedDoors.add(door);
+            sharedOpenDoors.put(door, new DoorHold(axisX, axisZ, side,
+                    npcLocation.getX(), npcLocation.getZ(), Bukkit.getCurrentTick()));
         }
     }
 
@@ -3644,25 +3760,6 @@ public final class CompanionManager {
             }
         }
         return false;
-    }
-
-    /**
-     * Whether an offset from the companion points towards the owner.
-     *
-     * <p>Uses a dot product against the direction to the owner: offsets in front score positive,
-     * offsets behind score negative. A small sideways tolerance keeps a door exactly on the path
-     * from being rejected.</p>
-     */
-    private static boolean isBetween(Location npcLocation, double ownerDx, double ownerDz,
-                                    double offsetX, double offsetZ) {
-        double ownerLength = Math.sqrt(ownerDx * ownerDx + ownerDz * ownerDz);
-        double offsetLength = Math.sqrt(offsetX * offsetX + offsetZ * offsetZ);
-        if (ownerLength < 1.0E-3 || offsetLength < 1.0E-3) {
-            // Degenerate: no clear direction, so do not touch anything.
-            return false;
-        }
-        double dot = (ownerDx * offsetX + ownerDz * offsetZ) / (ownerLength * offsetLength);
-        return dot >= DOOR_DIRECTION_THRESHOLD;
     }
 
     /**
@@ -3768,16 +3865,41 @@ public final class CompanionManager {
     }
 
     /**
-     * Whether this block is a door or a fence gate — the only two things a companion may open
-     * on its own.
+     * Whether this block is a wooden door, a copper door, or a fence gate — the only things a
+     * companion may open on its own.
      *
-     * <p>Both implement {@code Openable}, but so do trapdoors and a few other blocks that are
-     * meant to stay as they are. A companion that opened a trapdoor would leave a house
-     * looking as if it had been ransacked, and one that closed a trapdoor behind itself would
-     * trap the owner inside. So the check is on the concrete block type, not on the interface.</p>
+     * <p>The set matches what a villager is allowed to work in vanilla, plus the fence gate
+     * that was asked for. Vanilla only operates doors tagged {@code mob_interactable_doors},
+     * which is every wooden door and every copper door: not an iron door, not a trapdoor, and
+     * not a fence gate. Fence gates are kept here because a companion that has to walk around
+     * a closed gate to follow its owner is worse than one that opens it.</p>
+     *
+     * <p>Both door kinds implement {@code Openable}, but so do trapdoors, barrels and a few
+     * other blocks that are meant to stay as they are. A companion that opened a trapdoor would
+     * leave a house looking as if it had been ransacked, and one that closed a trapdoor behind
+     * itself would trap the owner inside. So the check is on the concrete block type, not on the
+     * interface.</p>
      */
-    private static boolean isDoorOrGate(Block block) {
-        return block.getBlockData() instanceof Door || block.getBlockData() instanceof Gate;
+    static boolean isDoorOrGate(Block block) {
+        Material material = block.getType();
+        if (material == Material.OAK_DOOR || material == Material.SPRUCE_DOOR
+                || material == Material.BIRCH_DOOR || material == Material.JUNGLE_DOOR
+                || material == Material.ACACIA_DOOR || material == Material.DARK_OAK_DOOR
+                || material == Material.PALE_OAK_DOOR || material == Material.CRIMSON_DOOR
+                || material == Material.WARPED_DOOR || material == Material.MANGROVE_DOOR
+                || material == Material.BAMBOO_DOOR || material == Material.CHERRY_DOOR
+                || material == Material.POPLAR_DOOR) {
+            return true;
+        }
+        if (material == Material.COPPER_DOOR || material == Material.EXPOSED_COPPER_DOOR
+                || material == Material.WEATHERED_COPPER_DOOR
+                || material == Material.OXIDIZED_COPPER_DOOR || material == Material.WAXED_COPPER_DOOR
+                || material == Material.WAXED_EXPOSED_COPPER_DOOR
+                || material == Material.WAXED_WEATHERED_COPPER_DOOR
+                || material == Material.WAXED_OXIDIZED_COPPER_DOOR) {
+            return true;
+        }
+        return block.getBlockData() instanceof Gate;
     }
 
     /**

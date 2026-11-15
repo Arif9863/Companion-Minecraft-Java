@@ -34,7 +34,8 @@ $testFiles = @(Get-ChildItem -Path $testSrc -Recurse -Filter '*.java' | ForEach-
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 foreach ($name in @('com.arif.companion.PlannerRulesTest', 'com.arif.companion.GapAheadTest',
-                    'com.arif.companion.LineOfSightTest', 'com.arif.companion.ChaseRulesTest')) {
+                    'com.arif.companion.LineOfSightTest', 'com.arif.companion.ChaseRulesTest',
+                    'com.arif.companion.DoorRulesTest')) {
     Write-Host ""
     Write-Host "== $name =="
     & $java -cp "$testOut;$cp" $name

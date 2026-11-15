@@ -645,13 +645,29 @@ final class PathPlanner {
     /**
      * Whether a block is a door or gate the companion can open by itself.
      *
-     * <p>Only wooden and iron doors and fence gates qualify. {@code Openable} also covers
+     * <p>Only wooden doors, copper doors, and fence gates qualify. {@code Openable} also covers
      * trapdoors, and routing through one of those is what made the companion walk over the
      * decoration in the owner's house instead of around it.</p>
      */
     static boolean isOpenable(Block block) {
-        return block.getBlockData() instanceof org.bukkit.block.data.type.Door
-                || block.getBlockData() instanceof org.bukkit.block.data.type.Gate;
+        Material type = block.getType();
+        if (type == Material.OAK_DOOR || type == Material.SPRUCE_DOOR
+                || type == Material.BIRCH_DOOR || type == Material.JUNGLE_DOOR
+                || type == Material.ACACIA_DOOR || type == Material.DARK_OAK_DOOR
+                || type == Material.PALE_OAK_DOOR || type == Material.CRIMSON_DOOR
+                || type == Material.WARPED_DOOR || type == Material.MANGROVE_DOOR
+                || type == Material.BAMBOO_DOOR || type == Material.CHERRY_DOOR
+                || type == Material.POPLAR_DOOR) {
+            return true;
+        }
+        if (type == Material.COPPER_DOOR || type == Material.EXPOSED_COPPER_DOOR
+                || type == Material.WEATHERED_COPPER_DOOR || type == Material.OXIDIZED_COPPER_DOOR
+                || type == Material.WAXED_COPPER_DOOR || type == Material.WAXED_EXPOSED_COPPER_DOOR
+                || type == Material.WAXED_WEATHERED_COPPER_DOOR
+                || type == Material.WAXED_OXIDIZED_COPPER_DOOR) {
+            return true;
+        }
+        return block.getBlockData() instanceof org.bukkit.block.data.type.Gate;
     }
 
     /** Whether a node is submerged in water, so movement should swim rather than walk. */
