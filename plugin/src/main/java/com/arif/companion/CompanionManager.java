@@ -236,6 +236,23 @@ public final class CompanionManager {
     /** How close a ranged companion stays to its target, so it keeps throwing instead of closing in. */
     private static final double RANGED_KEEP_DISTANCE = 8.0;
 
+    /**
+     * How high above its feet a companion's eyes are, in blocks.
+     *
+     * <p>Used when the companion works out whether it could throw from a spot it is only
+     * planning to walk to. A mannequin's own eye height is not known until it exists in the
+     * world, so the usual player height is used instead.</p>
+     */
+    private static final double EYE_HEIGHT = 1.62;
+
+    /**
+     * How long a found throwing spot is kept before the search runs again, in ticks.
+     *
+     * <p>Two seconds is long enough that the companion does not search on every tick, and
+     * short enough that it notices when the mob has moved somewhere else.</p>
+     */
+    private static final long FIRING_SPOT_INTERVAL_TICKS = 40L;
+
     /** How long Ei's spear thrust animation lasts, in ticks. */
     private static final int JAB_ANIMATION_TICKS = 4;
     /** Extra random ticks so two companions never glance in lockstep. */
@@ -568,6 +585,18 @@ public final class CompanionManager {
         private Location closeTarget;
         /** Tick at which the close target was last recomputed. */
         private long closeTargetTick = Long.MIN_VALUE;
+        /**
+         * The spot this companion found to throw its trident from, or null when none was found.
+         *
+         * <p>Searching for such a spot means trying a lot of places and checking every one of
+         * them for a clear line, which is far too much work to redo on every tick. The spot is
+         * kept until the target moves or the search is due again.</p>
+         */
+        private Location firingSpot;
+        /** Tick at which the firing spot was last searched for. */
+        private long firingSpotTick = Long.MIN_VALUE;
+        /** The mob the firing spot was found for, so a new target invalidates it. */
+        private UUID firingSpotTarget;
         /** The spot this companion was told to wait at, in WAIT mode. */
         private Location waitSpot;
         /** The direction the companion is currently strolling towards. */
@@ -1852,11 +1881,17 @@ public final class CompanionManager {
      * far side of the mob until it is about {@link #RANGED_KEEP_DISTANCE} blocks away, so the
      * trident has room to fly and the companion is not standing in the mob's face.</p>
      *
+     * <p>A thrower also has to be able to <i>see</i> the mob. Standing eight blocks away on the
+     * wrong side of a wall does not help: the trident would hit the wall. So the spot is one
+     * the companion can actually throw from, and it looks for one around the mob — by a
+     * doorway or a window, if the building has one.</p>
+     *
      * @param npc    the companion
      * @param state  the companion's state, which says which weapon it carries
      * @param target the mob being fought
      */
-    private static Location combatSpot(Mannequin npc, FollowState state, LivingEntity target) {
+    private static Location combatSpot(Mannequin npc, FollowState state, LivingEntity target,
+                                       long currentTick) {
         CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
         if (weapon == null || !weapon.isRanged()) {
             return meleeSpot(npc, target);
@@ -1873,12 +1908,71 @@ public final class CompanionManager {
             // Standing on top of the mob: step back so the throw has somewhere to come from.
             return targetLocation.clone().add(wanted, 0, 0);
         }
+        // Where the companion is standing may already be a good place to throw from. If it is,
+        // there is no reason to walk anywhere.
+        if (CompanionLineOfSight.canSee(npc, target)) {
+            state.firingSpot = null;
+            state.firingSpotTarget = null;
+            if (length >= wanted) {
+                return approachSpot(npc, target, wanted);
+            }
+            return currentSpot(npc, target, length, wanted);
+        }
+        // The line is blocked from where the companion stands, so it has to look for a spot it
+        // can throw from: a doorway, a window, the far side of the building.
+        Location firingSpot = firingSpot(npc, state, target, currentTick);
+        if (firingSpot != null) {
+            return firingSpot;
+        }
+        // No spot with a clear line was found. Keeping the old behaviour means the companion
+        // still holds its distance and waits for the mob to come into view.
         if (length >= wanted) {
-            // Far away: walk in until the wanted distance is reached.
             return approachSpot(npc, target, wanted);
         }
-        // Too close: back away along the same line, so the companion never has to walk around
-        // the mob to reach its throwing distance.
+        return currentSpot(npc, target, length, wanted);
+    }
+
+    /**
+     * The spot the companion last found to throw from, looked up again when it is due.
+     *
+     * <p>The search is expensive: every candidate spot has to be checked for a clear line and
+     * for a route to it. Doing that on every tick would cost far more than it is worth, so
+     * the result is kept for a while. It is thrown away as soon as the target changes, or
+     * when the companion has moved away from the spot, since from there the shot may be
+     * blocked again.</p>
+     */
+    private static Location firingSpot(Mannequin npc, FollowState state, LivingEntity target,
+                                       long currentTick) {
+        UUID targetId = target.getUniqueId();
+        boolean staleTarget = !targetId.equals(state.firingSpotTarget);
+        boolean expired = state.firingSpotTick == Long.MIN_VALUE
+                || currentTick - state.firingSpotTick >= FIRING_SPOT_INTERVAL_TICKS;
+        if (!staleTarget && !expired && state.firingSpot != null) {
+            // The spot is only still good if the companion can see the mob from there.
+            Location eye = state.firingSpot.clone().add(0.0, EYE_HEIGHT, 0.0);
+            if (CompanionLineOfSight.canSeeFrom(npc.getWorld(), eye, target)) {
+                return state.firingSpot;
+            }
+            state.firingSpot = null;
+        }
+        state.firingSpotTick = currentTick;
+        state.firingSpotTarget = targetId;
+        state.firingSpot = findFiringSpot(npc, target);
+        return state.firingSpot;
+    }
+
+    /**
+     * The spot the companion stands on while it backs away from the mob.
+     *
+     * <p>It backs away along the same line, so the companion never has to walk around the mob
+     * to reach its throwing distance.</p>
+     */
+    private static Location currentSpot(Mannequin npc, LivingEntity target, double length,
+                                        double wanted) {
+        Location targetLocation = target.getLocation();
+        Location npcLocation = npc.getLocation();
+        double dx = targetLocation.getX() - npcLocation.getX();
+        double dz = targetLocation.getZ() - npcLocation.getZ();
         double back = wanted - length;
         Location spot = new Location(targetLocation.getWorld(),
                 npcLocation.getX() - dx / length * back,
@@ -1888,6 +1982,77 @@ public final class CompanionManager {
             return targetLocation.clone();
         }
         return spot;
+    }
+
+    /**
+     * Looks for a spot the companion can throw the trident from.
+     *
+     * <p>The spots are tried in rings around the mob. A spot that is close to the mob is
+     * preferred, because the trident has less to travel and less to miss; a spot further away
+     * is only used when nothing closer has a clear line.</p>
+     *
+     * <p>Every spot has to be free to stand on and to have an unobstructed line to the mob, so
+     * the companion never walks into geometry and never picks a spot it still cannot throw
+     * from.</p>
+     *
+     * @return the spot to walk to, or {@code null} when no spot with a clear line was found
+     */
+    private static Location findFiringSpot(Mannequin npc, LivingEntity target) {
+        World world = npc.getWorld();
+        Location targetLocation = target.getLocation();
+        Location npcLocation = npc.getLocation();
+        // The rings around the mob, from the closest outwards. The first ring is the mob's
+        // own doorstep, the last is as far as the trident reaches.
+        double[] radii = {2.0, 3.5, 5.0, 7.0, RANGED_KEEP_DISTANCE, RANGED_THROW_RANGE};
+        // Where the companion is now, so the search starts from its own side and works
+        // outwards: the nearest clear line is usually just around a corner.
+        double baseAngle = Math.atan2(npcLocation.getZ() - targetLocation.getZ(),
+                npcLocation.getX() - targetLocation.getX());
+        // The line of sight is the cheap check and the route is the expensive one, so the
+        // order matters: a spot that cannot see the mob is not worth a route check.
+        List<Location> candidates = new ArrayList<>();
+        for (double radius : radii) {
+            if (radius > RANGED_THROW_RANGE) {
+                break;
+            }
+            // Eight directions per ring, each tried a little above and below the mob's own
+            // level, since a window is often a little higher or lower than the ground.
+            for (int step = 0; step < 16; step++) {
+                double angle = baseAngle + Math.PI * 2.0 * step / 16.0;
+                double offsetX = Math.cos(angle) * radius;
+                double offsetZ = Math.sin(angle) * radius;
+                for (double height : new double[]{0.0, 1.0, -1.0}) {
+                    Location spot = new Location(world,
+                            targetLocation.getX() + offsetX,
+                            targetLocation.getY() + height,
+                            targetLocation.getZ() + offsetZ);
+                    if (!CompanionLineOfSight.standable(spot)) {
+                        continue;
+                    }
+                    // The eye is a little above the feet.
+                    Location eye = spot.clone().add(0.0, EYE_HEIGHT, 0.0);
+                    if (CompanionLineOfSight.canSeeFrom(world, eye, target)) {
+                        candidates.add(spot);
+                    }
+                }
+            }
+            // The rings are tried from the closest outwards, and a spot close to the mob is
+            // the better one: the trident has less to travel and less to miss. So the first
+            // ring that offers a usable spot is enough.
+            for (Location candidate : candidates) {
+                // The spot has to be one the companion can walk to, not one it has to climb
+                // through a wall to reach.
+                if (hasWalkableRoute(world, npcLocation, candidate)) {
+                    return candidate;
+                }
+            }
+            if (!candidates.isEmpty()) {
+                // The ring had spots with a clear line, but none of them can be walked to.
+                // A wider ring will not be better on that count, so the search stops here.
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
@@ -1935,7 +2100,6 @@ public final class CompanionManager {
         if (!firstSwing && currentTick - state.lastSwingTick < plugin.attackCooldownTicks()) {
             return;
         }
-        state.lastSwingTick = currentTick;
 
         CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
         if (weapon == null) {
@@ -1944,9 +2108,15 @@ public final class CompanionManager {
         }
 
         if (weapon.isRanged()) {
-            throwAtTarget(npc, owner, target, weapon);
+            if (!throwAtTarget(npc, owner, target, weapon)) {
+                // The shot is blocked. The companion has to move somewhere it can see the
+                // mob from, so the swing is not spent and the target is left alone.
+                return;
+            }
+            state.lastSwingTick = currentTick;
             return;
         }
+        state.lastSwingTick = currentTick;
 
         if (weapon.style() == CompanionWeapons.Style.JAB) {
             // A jab is a thrust, not a sweep: the arm goes straight forward at the mob. Paper's
@@ -1971,9 +2141,22 @@ public final class CompanionManager {
      *
      * <p>The companion keeps its distance: the trident is launched at the mob and the damage
      * comes from the projectile, not from a swing.</p>
+     *
+     * <p>A trident does not stop at a wall, so the shot is only taken when the companion can
+     * actually see the mob. Throwing at a mob behind a wall sends the trident into the wall
+     * and the mob is never touched — and damaging it directly from behind that wall would be
+     * just as wrong, since the companion clearly cannot reach it. When the line is blocked the
+     * companion looks for a place to throw from instead.</p>
+     *
+     * @return true when the trident was thrown
      */
-    private void throwAtTarget(Mannequin npc, Player owner, LivingEntity target,
-                               CompanionWeapons.Weapon weapon) {
+    private boolean throwAtTarget(Mannequin npc, Player owner, LivingEntity target,
+                                  CompanionWeapons.Weapon weapon) {
+        if (!CompanionLineOfSight.canSee(npc, target)) {
+            // Something stands in the way. The companion has to find a spot with a clear line
+            // before it can throw; it does not waste its weapon on the wall.
+            return false;
+        }
         releaseAggro(target, owner);
         org.bukkit.entity.Trident thrown = RangedTridentAttack.launch(
                 npc, owner, target, RANGED_THROW_RANGE, RANGED_THROW_SPEED, weapon.damage(),
@@ -1982,7 +2165,9 @@ public final class CompanionManager {
             // The shot was not possible — the target is out of range or in another world. Fall
             // back to a plain strike so the companion is never left standing there.
             target.damage(weapon.damage(), npc);
+            return true;
         }
+        return true;
     }
 
     /**
@@ -2173,7 +2358,7 @@ public final class CompanionManager {
             // to hold and never leaves to chase the owner across the map.
             LivingEntity attackTarget = resolveAttackTarget(npc, owner, state, currentTick);
             if (attackTarget != null) {
-                targetSpot = combatSpot(npc, state, attackTarget);
+                targetSpot = combatSpot(npc, state, attackTarget, currentTick);
             }
             // A waiting companion is on a leash: it fights what comes inside the ground it holds,
             // but it does not follow a mob out of that ground. Once the mob pulls it too far from

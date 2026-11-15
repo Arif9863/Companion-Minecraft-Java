@@ -126,7 +126,7 @@ public final class PlannerRulesTest {
                 });
     }
 
-    private static BlockData doorData() {
+    static BlockData doorData() {
         return proxy(Door.class, false);
     }
 

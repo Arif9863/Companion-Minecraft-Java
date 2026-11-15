@@ -29,7 +29,8 @@ $testFiles = @(Get-ChildItem -Path $testSrc -Recurse -Filter '*.java' | ForEach-
 & $javac -encoding UTF-8 -cp $cp -d $testOut $testFiles
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-foreach ($name in @('com.arif.companion.PlannerRulesTest', 'com.arif.companion.GapAheadTest')) {
+foreach ($name in @('com.arif.companion.PlannerRulesTest', 'com.arif.companion.GapAheadTest',
+                    'com.arif.companion.LineOfSightTest')) {
     Write-Host ""
     Write-Host "== $name =="
     & $java -cp "$testOut;$cp" $name

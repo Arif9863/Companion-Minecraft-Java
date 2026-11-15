@@ -128,6 +128,13 @@ mob to fight, and puts it away again when the fight is over.
 - **A thrown companion keeps its distance.** Columbina and Escoffier step back to about
   8 blocks and throw the trident from there, instead of walking into the mob's face. They strike
   from up to 18 blocks away — the throw's own range — and turn to face the mob while they throw.
+- **A thrown companion only throws at a mob it can see.** A trident does not stop at a wall, so
+  throwing at a mob behind a wall would send it into the wall and hit nothing. The line between
+  the thrower and the mob is checked first; when something stands in the way the companion looks
+  for a spot it can throw from — by a doorway or a window if the building has one — and waits
+  there. The mob is not damaged from behind a wall either.
+- **A door is not a wall.** A door or a fence gate in the line does not stop the shot, because
+  the companion opens it on the way through. A trapdoor, a fence or a block of any kind does.
 - **Melee companions close in and stop.** They walk up to the mob and settle about 1.4 blocks
   short of it, so they are neither shoving into it nor standing a block too far away to swing.
 
@@ -378,4 +385,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File plugin\run-tests.ps1
 
 `PlannerRulesTest` covers the carpet surface, the route past a door, the fence barrier and
 which blocks may be opened. `GapAheadTest` covers the gap check that used to mistake a
-carpet for a hole.
+carpet for a hole. `LineOfSightTest` covers the check that keeps a thrown trident from
+being aimed into a wall.

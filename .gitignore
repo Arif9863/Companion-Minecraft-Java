@@ -10,6 +10,9 @@ Paper/Paper26.3/crash-reports/
 Paper/Paper26.3/.paper/
 Paper/Paper26.3/session.lock
 Paper/Paper26.3/paper.jar
+
+# A log written next to the repository root when the server is started from there.
+logs/
 Paper/Paper26.3/*.log
 # Contains a management-server secret; keep it out of version control.
 Paper/Paper26.3/server.properties
