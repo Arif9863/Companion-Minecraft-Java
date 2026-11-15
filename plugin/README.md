@@ -83,24 +83,16 @@ four newer ones. `semua` means the whole group, never Eris — she has her own c
 - `/eris` (alias `/eris-chan`) — call Eris, the standalone companion.
 - `/eris ikut`, `/eris kesini`, `/eris tunggu`, `/eris off` — control her.
 
-### Clickable controls
+### Changing the mode by clicking
 
-After `/istri` (and after `/eris`), the plugin sends one extra chat line with clickable
-labels: `[Ikut] [Kesini] [Tunggu]` for the group, and `[Ikut] [Kesini] [Tunggu] [Off]` for
-Eris. Clicking a label runs the matching command — `/ikut semua`, `/kesini semua`,
-`/tunggu semua`, `/eris ikut` and so on — exactly as if it had been typed, so the click
-cannot disagree with the command.
+The mode is changed by **crouching and right-clicking the companion**, which is quicker than
+a command and needs no menu. A short status appears above the hotbar (action bar) so the
+chat stays quiet.
 
-The line is sent **once**, right after the companions are called. It is not shown in the
-action bar: the action bar is the single line above the hotbar that the companions already use
-for their own messages (Yui's heal, Sandrone's protection), and its text cannot be clicked in
-Java Edition.
-
-A chat line scrolls away with the rest of the chat, so the line is also **repeated every 60
-seconds** while you still have companions out — the newest line is then always the one on
-screen and can be clicked without scrolling to look for it. Change `control-bar-repeat-seconds`
-in `config.yml` (or set it to `0` to send the line only after `/istri`), then run
-`/companionnpc reload`.
+The clickable chat line that used to appear after `/istri` is gone. It was repeated every
+minute, which filled the chat with three labels the whole time the companions were out, and
+crouching and right-clicking does the same thing without the noise. The commands themselves
+(`/ikut`, `/kesini`, `/tunggu`) still work, so nothing was lost — only the chat line is.
 
 **Yui and Sandrone are UUID-locked.** Only UUIDs listed in `companion-owners` in
 `plugins/CompanionNPCs/config.yml` may call them or use their behaviour commands; OP status does
@@ -258,8 +250,8 @@ A companion has exactly one standing behaviour at a time. **The mode stays in fo
 ### Changing the mode without a command
 
 **Crouch and right-click a companion** to move her to the next mode: Ikut → Kesini → Tunggu → Ikut.
-The chat says which mode she is in now. This works for all six companions of the group and for
-Eris.
+A short status appears above the hotbar (action bar), for example `Furina sekarang Kesini.`
+This works for all six companions of the group and for Eris.
 
 A plain right-click still opens her pouch, so the crouch is what tells the two apart. Only the
 owner can do this: anyone else gets the companion's own refusal, exactly as when opening the
@@ -277,12 +269,14 @@ All three companions — Yui, Sandrone, and Eris — share the same A* navigatio
 Mannequins are not `Mob` and have no vanilla pathfinder, so the plugin computes an A* route itself (`PathPlanner`) and walks it with velocity.
 
 - **Never through walls.** A route only exists if every step is walkable. A node without solid ground beneath it is rejected, so a route cannot lead across the void of a ravine.
+- **Never through a fence.** A fence, a fence wall or a glass pane is a barrier, not a floor. The companion does not treat one as something to stand on and step over, so it goes around instead of shoving its way through.
 - **Never down a cliff.** A walking route descends at most one block per step — except when you are standing below the companion, where it may come down after you (up to 12 blocks). A parkour jump across a gap may land up to four blocks lower. Either way, the fall shaft must be clear and the landing must have safe solid ground.
 - **Parkour.** All three companions — Yui, Sandrone, and Eris — share the same jump behavior. A gap of up to three blocks can be crossed; the companion can also land on a far side one block higher or up to four blocks lower. Lower jumps require an open gap, a clear fall shaft, and a solid safe landing floor.
 - **Climbing onto a ledge.** A far side that sits one block higher is jumped onto rather than merely jumped at. The companion aims at the middle of that block and matches its speed to the distance, so it arrives while the jump is still high enough to land on top — arriving too early would sail over the ledge, and too late would drop back into the gap. A single short hop covers the last fraction of a block.
+- **Carpets are walked over, not jumped over.** A carpet is a sixteenth of a block tall, so the route's waypoint sits on its surface rather than a block above it, and the companion does not jump along on every carpet it crosses. A carpet also does not make the ground solid: a carpet laid over a hole is still a hole.
 - **Never into the void.** When the companion has no route for 5 seconds, or is more than 8 blocks below you while standing on ground, it is rescued to its mode's safe landing spot.
 - **Emergency teleports are distance-based** (`teleport-distance`, `close-teleport-distance`, both 24 blocks by default). A blocked route alone never causes a teleport.
-- **Doors are opened on the way** and closed again afterwards. When two companions pass through the same doorway, the first one holds the door open for the second, but for at most 6 seconds, so a house is never left open.
+- **Doors and fence gates are opened on the way** and closed again afterwards. When two companions pass through the same doorway, the first one holds the door open for the second, but for at most 6 seconds, so a house is never left open. Nothing else is touched: a trapdoor, a barrel or any other block that happens to be openable is left exactly as it is, so the decorations in a house stay as they were put there.
 - **Swimming works.** Water is a valid route node, and a companion in water swims after you instead of teleporting.
 
 ## Skin methods
@@ -374,3 +368,14 @@ the formats disagree, the startup log says so and names the file to fix.
 ## Tests
 
 Compile against Paper 26.3, then use an isolated server copy on port 25566. Set `debug-self-test: true` only there to spawn both mannequins at test-world spawn and log `SELF-TEST PASS`; default stays false. Do not enable debug self-test on production.
+
+The navigation rules — the carpet, the fence and the door — are checked against a world built
+in memory, so a change to the planner is caught without a running server:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File plugin\run-tests.ps1
+```
+
+`PlannerRulesTest` covers the carpet surface, the route past a door, the fence barrier and
+which blocks may be opened. `GapAheadTest` covers the gap check that used to mistake a
+carpet for a hole.

@@ -16,7 +16,7 @@ final class CompanionModeFeedback {
     }
 
     /**
-     * Tells the owner which mode the companion is in now.
+     * Shows the owner which mode the companion is in now above the hotbar.
      *
      * @param owner     the player who owns the companion
      * @param archetype the companion's archetype
@@ -27,10 +27,8 @@ final class CompanionModeFeedback {
             return;
         }
         String label = CompanionManager.labelFor(archetype);
-        owner.sendMessage(Component.text(label, NamedTextColor.LIGHT_PURPLE)
-                .append(Component.text(" sekarang ", NamedTextColor.GRAY))
-                .append(Component.text(modeName(mode), NamedTextColor.GREEN))
-                .append(Component.text(".", NamedTextColor.GRAY)));
+        owner.sendActionBar(Component.text(label + " sekarang " + modeName(mode) + ".",
+                NamedTextColor.GREEN));
     }
 
     /** The word the owner knows the mode by. */

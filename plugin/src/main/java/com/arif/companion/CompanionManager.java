@@ -15,6 +15,8 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.Openable;
+import org.bukkit.block.data.type.Door;
+import org.bukkit.block.data.type.Gate;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
@@ -317,6 +319,14 @@ public final class CompanionManager {
      * unsupported gap is actually there. It should not jump down a supported stair tread.</p>
      */
     private static final double GAP_LOOKAHEAD = 1.0;
+    /**
+     * How much higher a waypoint has to be before the companion jumps for it.
+     *
+     * <p>A carpet is a sixteenth of a block tall and a slab half a block, and the companion
+     * walks over both of them without a jump. Only a real step needs one, so the threshold sits
+     * above a slab and below a full block.</p>
+     */
+    private static final double STEP_UP_JUMP_HEIGHT = 0.6;
     /**
      * How close an elevated waypoint has to be before the companion hops up onto it.
      *
@@ -2484,8 +2494,10 @@ public final class CompanionManager {
                     }
                     vx = (wx / waypointDistance) * speed;
                     velocityZ = (wz / waypointDistance) * speed;
-                } else if (onGround && wy > 0.4 && waypointDistance <= PARKOUR_STEP_UP_REACH) {
-                    // Ordinary one-block step-up.
+                } else if (onGround && wy > STEP_UP_JUMP_HEIGHT && waypointDistance <= PARKOUR_STEP_UP_REACH) {
+                    // Ordinary one-block step-up. The threshold is well above a carpet or a slab,
+                    // which the companion walks up onto without jumping: only a real step needs
+                    // a jump.
                     vy = 0.42;
                 }
                 // Maintain jump steering until landing, then let the next waypoint take over.
@@ -2565,7 +2577,7 @@ public final class CompanionManager {
      * one-block step-down stays a normal walk; a missing support column is a gap, even if there
      * is a lower floor beyond it.</p>
      */
-    private static boolean isGapAhead(Mannequin npc, Location npcLocation, double wx, double wz) {
+    static boolean isGapAhead(Mannequin npc, Location npcLocation, double wx, double wz) {
         double length = Math.sqrt(wx * wx + wz * wz);
         if (length < 1.0E-3) {
             return false;
@@ -2599,7 +2611,17 @@ public final class CompanionManager {
         return isClearColumn(world, x, originY, z);
     }
 
-    /** Whether there is a solid block to stand on at the given position. */
+    /**
+     * Whether there is a solid block to stand on at the given position.
+     *
+     * <p>A carpet counts as a floor, but only when there is a real floor underneath it. The
+     * carpet is a sixteenth of a block tall and is laid on top of the ground, so the companion
+     * walks over it without ever dropping into the block below. Treating it as a floor is what
+     * keeps the companion from jumping along on every carpet it crosses, and from declaring a
+     * gap in front of a door that has a carpet laid out in front of it. A carpet laid over a
+     * hole is decoration, though, and does not make the ground solid — so the block below it
+     * still has to hold it up.</p>
+     */
     private static boolean hasFloorAt(World world, int x, int y, int z) {
         if (!world.isChunkLoaded(x >> 4, z >> 4)) {
             return true;
@@ -2607,6 +2629,11 @@ public final class CompanionManager {
         Block block = world.getBlockAt(x, y, z);
         if (block.getType() == Material.WATER) {
             return true;
+        }
+        if (PathPlanner.isCarpet(block)) {
+            // The carpet is only a decoration: the ground under it is what holds the companion
+            // up, so that is what has to be checked.
+            return hasFloorAt(world, x, y - 1, z);
         }
         return !block.getCollisionShape().getBoundingBoxes().isEmpty();
     }
@@ -2748,7 +2775,12 @@ public final class CompanionManager {
     }
 
 
-    /** Whether the given column is free for the companion to pass through. */
+    /**
+     * Whether the given column is free for the companion to pass through.
+     *
+     * <p>A carpet counts as free. It is only a sixteenth of a block tall and the companion
+     * walks over it, so it must not stop a jump or be read as an obstacle.</p>
+     */
     private static boolean isClearColumn(World world, int x, int y, int z) {
         if (!world.isChunkLoaded(x >> 4, z >> 4)) {
             return false;
@@ -2758,8 +2790,11 @@ public final class CompanionManager {
         if (feet.getType() == Material.WATER || head.getType() == Material.WATER) {
             return false;
         }
-        return feet.getCollisionShape().getBoundingBoxes().isEmpty()
-                && head.getCollisionShape().getBoundingBoxes().isEmpty();
+        boolean feetFree = PathPlanner.isCarpet(feet)
+                || feet.getCollisionShape().getBoundingBoxes().isEmpty();
+        boolean headFree = PathPlanner.isCarpet(head)
+                || head.getCollisionShape().getBoundingBoxes().isEmpty();
+        return feetFree && headFree;
     }
 
     private void updateMovementPose(Mannequin npc, FollowState state, boolean inWater) {
@@ -3000,6 +3035,9 @@ public final class CompanionManager {
             for (int dz = -1; dz <= 1; dz++) {
                 for (int dy = 0; dy <= 1; dy++) {
                     Block block = world.getBlockAt(bx + dx, by + dy, bz + dz);
+                    if (!isDoorOrGate(block)) {
+                        continue;
+                    }
                     if (!(block.getBlockData() instanceof Openable openable) || openable.isOpen()) {
                         continue;
                     }
@@ -3158,6 +3196,12 @@ public final class CompanionManager {
             for (int dz = -1; dz <= 1; dz++) {
                 for (int dy = 0; dy <= 1; dy++) {
                     Block block = world.getBlockAt(bx + dx, by + dy, bz + dz);
+                    // Only doors and fence gates are adopted. A trapdoor that somebody left open
+                    // is decoration, and closing it behind the companion would change how the
+                    // owner's house looks for no reason.
+                    if (!isDoorOrGate(block)) {
+                        continue;
+                    }
                     if (!(block.getBlockData() instanceof Openable openable) || !openable.isOpen()) {
                         continue;
                     }
@@ -3268,6 +3312,12 @@ public final class CompanionManager {
             if (!isFreeForCompanion(target)) {
                 continue;
             }
+            // The step must not cross a fence or a wall. A sidestep that lands on the far side
+            // of a barrier would put the companion on the wrong side of it, which is the same
+            // as walking through the fence.
+            if (crossesBarrier(current, target)) {
+                continue;
+            }
             npc.teleport(target);
             npc.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
             state.path = List.of();
@@ -3276,6 +3326,39 @@ public final class CompanionManager {
             state.waypointIndex = 0;
             state.lastProgressPosition = null;
             return true;
+        }
+        return false;
+    }
+
+    /**
+     * Whether moving straight from one spot to another would pass through a barrier.
+     *
+     * <p>Only the blocks between the two spots are looked at. A fence, a fence wall or a glass
+     * pane counts as a barrier: stepping over one of those is the same as squeezing through
+     * it, so the companion has to go around instead.</p>
+     */
+    private static boolean crossesBarrier(Location from, Location to) {
+        World world = from.getWorld();
+        if (world == null || !world.equals(to.getWorld())) {
+            return true;
+        }
+        double dx = to.getX() - from.getX();
+        double dz = to.getZ() - from.getZ();
+        int steps = (int) Math.ceil(Math.max(Math.abs(dx), Math.abs(dz)) * 2.0);
+        if (steps <= 0) {
+            return false;
+        }
+        int y = (int) Math.floor(from.getY());
+        for (int step = 1; step < steps; step++) {
+            double fraction = (double) step / steps;
+            int x = (int) Math.floor(from.getX() + dx * fraction);
+            int z = (int) Math.floor(from.getZ() + dz * fraction);
+            if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+                continue;
+            }
+            if (PathPlanner.isBarrier(world.getBlockAt(x, y, z))) {
+                return true;
+            }
         }
         return false;
     }
@@ -3300,6 +3383,19 @@ public final class CompanionManager {
                 other.setBlockData(otherOpenable, false);
             }
         }
+    }
+
+    /**
+     * Whether this block is a door or a fence gate — the only two things a companion may open
+     * on its own.
+     *
+     * <p>Both implement {@code Openable}, but so do trapdoors and a few other blocks that are
+     * meant to stay as they are. A companion that opened a trapdoor would leave a house
+     * looking as if it had been ransacked, and one that closed a trapdoor behind itself would
+     * trap the owner inside. So the check is on the concrete block type, not on the interface.</p>
+     */
+    private static boolean isDoorOrGate(Block block) {
+        return block.getBlockData() instanceof Door || block.getBlockData() instanceof Gate;
     }
 
     /**
@@ -3378,10 +3474,17 @@ public final class CompanionManager {
             state.waitNextTurnTick = Long.MIN_VALUE;
             Location home = state.waitSpot.clone();
             // Aim a little past the anchor so the companion does not hover on the rim of it.
-            return new Location(npc.getWorld(),
+            Location back = new Location(npc.getWorld(),
                     home.getX() - anchorDx / anchorDistance * 1.5,
                     home.getY(),
                     home.getZ() - anchorDz / anchorDistance * 1.5);
+            // The way back has to be walked around, not through. A companion that was pulled
+            // behind a fence walks around it, so it needs a route; without one it stays put
+            // instead of shoving through the barrier on the way home.
+            if (hasWalkableRoute(npc.getWorld(), npcLocation, back)) {
+                return back;
+            }
+            return npcLocation.clone();
         }
         // Resting between strolls: the companion stands still for a moment, the way a mob idles.
         if (state.waitSpotPaused) {
@@ -3417,6 +3520,19 @@ public final class CompanionManager {
     }
 
     /**
+     * Whether a route exists between two places that the companion can walk.
+     *
+     * <p>Used to check a stroll target before the companion heads for it. A point that is only
+     * a block away can still be behind a fence, and walking at it would push the companion
+     * through the barrier rather than around it.</p>
+     */
+    private static boolean hasWalkableRoute(World world, Location from, Location to) {
+        List<org.bukkit.util.Vector> route = PathPlanner.findPath(world, from, to,
+                PATH_RADIUS, false, false, false);
+        return !route.isEmpty();
+    }
+
+    /**
      * Chooses where the companion strolls next.
      *
      * <p>The companion picks a direction and keeps walking it for a while, the way a mob wanders:
@@ -3444,7 +3560,7 @@ public final class CompanionManager {
                     npcLocation.getX() - offsetX * backScale,
                     npcLocation.getY(),
                     npcLocation.getZ() - offsetZ * backScale);
-            if (isFreeForCompanion(back)) {
+            if (isFreeForCompanion(back) && hasWalkableRoute(world, npcLocation, back)) {
                 return back;
             }
         }

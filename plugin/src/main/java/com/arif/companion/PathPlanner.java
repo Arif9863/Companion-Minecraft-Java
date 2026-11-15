@@ -555,6 +555,11 @@ final class PathPlanner {
      *
      * <p>Water counts as support: a companion swims there and has to be able to surface, and a
      * swimming node has no solid block underneath it.</p>
+     *
+     * <p>A fence or a wall does <b>not</b> count. It is only a thin barrier, so a companion that
+     * treated it as a floor would route straight over it and drop down on the far side — which is
+     * what made the companions shove their way through fences instead of going around. Only a
+     * surface a companion could really stand on counts here.</p>
      */
     private static boolean hasGroundSupport(World world, Node node) {
         if (isWater(world, node)) {
@@ -568,7 +573,27 @@ final class PathPlanner {
             return false;
         }
         Block support = world.getBlockAt(below.x(), below.y(), below.z());
+        if (isBarrier(support)) {
+            return false;
+        }
         return !hasNoCollision(support);
+    }
+
+    /**
+     * Whether the block is a thin barrier a companion must not treat as a floor.
+     *
+     * <p>Fences, fence walls and glass panes are only a block or so tall and thin. A companion
+     * that stands on one and steps over it is not walking through a gap — it is squeezing
+     * through a fence, which is exactly what the owner complained about. Real walls and solid
+     * blocks are unaffected: they are still solid and still block the route.</p>
+     *
+     * <p>The block data types are used rather than the material names, because the material
+     * names differ from version to version while the types do not.</p>
+     */
+    static boolean isBarrier(Block block) {
+        return block.getBlockData() instanceof org.bukkit.block.data.type.Fence
+                || block.getBlockData() instanceof org.bukkit.block.data.type.Wall
+                || block.getBlockData() instanceof org.bukkit.block.data.type.GlassPane;
     }
 
     /** Whether the block itself has no collision shape, ignoring fluids. */
@@ -579,16 +604,54 @@ final class PathPlanner {
         Block block = world.getBlockAt(node.x(), node.y(), node.z());
         // Closed doors and gates have collision, but the companion opens them on the way through,
         // so planning is allowed to route through them.
-        return isOpenable(block) || hasNoCollision(block);
+        if (isOpenable(block)) {
+            return true;
+        }
+        // A carpet is only a sixteenth of a block tall. The companion walks over it, so a route
+        // must be allowed to cross it — otherwise a carpet laid in front of a door ends the
+        // route right there and the companion has to be rescued with a teleport.
+        if (isCarpet(block)) {
+            return true;
+        }
+        return hasNoCollision(block);
+    }
+
+    /**
+     * Whether the block is a carpet.
+     *
+     * <p>Carpet has no block-data type of its own, so it is recognised by its material. Every
+     * carpet colour is checked, because the plugin cannot pick one.</p>
+     */
+    static boolean isCarpet(Block block) {
+        Material type = block.getType();
+        return type == Material.WHITE_CARPET
+                || type == Material.ORANGE_CARPET
+                || type == Material.MAGENTA_CARPET
+                || type == Material.LIGHT_BLUE_CARPET
+                || type == Material.YELLOW_CARPET
+                || type == Material.LIME_CARPET
+                || type == Material.PINK_CARPET
+                || type == Material.GRAY_CARPET
+                || type == Material.LIGHT_GRAY_CARPET
+                || type == Material.CYAN_CARPET
+                || type == Material.PURPLE_CARPET
+                || type == Material.BLUE_CARPET
+                || type == Material.BROWN_CARPET
+                || type == Material.GREEN_CARPET
+                || type == Material.RED_CARPET
+                || type == Material.BLACK_CARPET;
     }
 
     /**
      * Whether a block is a door or gate the companion can open by itself.
      *
-     * <p>{@code Openable} covers both wooden and iron doors as well as fence gates.</p>
+     * <p>Only wooden and iron doors and fence gates qualify. {@code Openable} also covers
+     * trapdoors, and routing through one of those is what made the companion walk over the
+     * decoration in the owner's house instead of around it.</p>
      */
     static boolean isOpenable(Block block) {
-        return block.getBlockData() instanceof org.bukkit.block.data.Openable;
+        return block.getBlockData() instanceof org.bukkit.block.data.type.Door
+                || block.getBlockData() instanceof org.bukkit.block.data.type.Gate;
     }
 
     /** Whether a node is submerged in water, so movement should swim rather than walk. */
@@ -643,7 +706,14 @@ final class PathPlanner {
         return dx * dx + dz * dz <= radius * radius;
     }
 
-    /** Walks the parent chain backwards and returns waypoints ordered from start to goal. */
+    /**
+     * Walks the parent chain backwards and returns waypoints ordered from start to goal.
+     *
+     * <p>A waypoint's height is the surface the companion stands on, not the block it belongs
+     * to. A carpet or a slab is a fraction of a block tall, and using the block's own height
+     * made the companion believe it had to climb a full block to reach the next step — so it
+     * jumped along on every carpet it crossed.</p>
+     */
     private static List<Vector> buildWaypoints(Map<Node, Node> cameFrom, Node goal, Location start) {
         List<Node> reversed = new ArrayList<>();
         Node cursor = goal;
@@ -654,9 +724,10 @@ final class PathPlanner {
         }
         Collections.reverse(reversed);
 
+        World world = start.getWorld();
         List<Vector> waypoints = new ArrayList<>(reversed.size());
         for (Node node : reversed) {
-            waypoints.add(new Vector(node.x() + 0.5, node.y(), node.z() + 0.5));
+            waypoints.add(new Vector(node.x() + 0.5, surfaceHeight(world, node), node.z() + 0.5));
         }
         // The first waypoint is the block the companion already stands on; drop it so movement
         // immediately heads towards the next useful waypoint.
@@ -667,6 +738,25 @@ final class PathPlanner {
             }
         }
         return waypoints;
+    }
+
+    /**
+     * The height the companion's feet rest at when it stands on the given block.
+     *
+     * <p>This is the top of the block's collision shape. For a full block that is the block's
+     * own height; for a carpet, a slab or a stair it is the part of the block that actually
+     * sticks up.</p>
+     */
+    private static double surfaceHeight(World world, Node node) {
+        if (!isChunkLoaded(world, node)) {
+            return node.y();
+        }
+        Block block = world.getBlockAt(node.x(), node.y(), node.z());
+        double top = node.y();
+        for (org.bukkit.util.BoundingBox box : block.getCollisionShape().getBoundingBoxes()) {
+            top = Math.max(top, node.y() + box.getMaxY());
+        }
+        return top;
     }
 
     private static Node toNode(Location location) {
