@@ -257,13 +257,17 @@ public final class CompanionManager {
     private static final int JAB_ANIMATION_TICKS = 4;
 
     /**
-     * How long a waiting companion leaves a mob alone after it was pulled off its post, in ticks.
+     * How long a companion leaves a mob alone after it was pulled off its post or out of its
+     * owner's reach, in ticks.
      *
      * <p>Two seconds is enough for the companion to walk back onto its post and start its
      * wander again. Without the pause the same mob pulls it straight back out, and the
-     * companion walks out and back for ever instead of holding its ground.</p>
+     * companion walks out and back for ever instead of holding its ground. The pause applies
+     * to that one mob only: another one that comes close is still fought.</p>
      */
-    private static final long LEASH_BREAK_TICKS = 40L;    /** Extra random ticks so two companions never glance in lockstep. */
+    private static final long LEASH_BREAK_TICKS = 40L;
+
+    /** Extra random ticks so two companions never glance in lockstep. */
     private static final long GLANCE_DURATION_VARIANCE_TICKS = 20L;
     /** Idle ticks between two glance checks: 3-4 seconds, deliberately unhurried. */
     private static final long GLANCE_CHECK_INTERVAL_TICKS = 60L;
@@ -558,13 +562,11 @@ public final class CompanionManager {
         /** Tick at which the current attack target was picked, used for the grace period. */
         private long attackTargetTick = Long.MIN_VALUE;
         /**
-         * Tick at which this companion let a mob go because the mob pulled it off its post.
-         *
-         * <p>For a moment after that, no new fight is picked up. The companion needs to walk
-         * back to its post first, and a mob that is still nearby would otherwise pull it out
-         * again the moment it arrived.</p>
+         * Hostile mobs the companion just let go because they pulled it off its post or out
+         * of its owner's reach. They are not picked up again while the companion returns,
+         * but another mob can still be defended against.
          */
-        private long leashBreakTick = Long.MIN_VALUE;
+        private final Map<UUID, Long> releasedTargetsUntil = new HashMap<>();
         /** Tick of the last swing, used to space the melee hits out. */
         private long lastSwingTick = Long.MIN_VALUE;
         /** Tick of the last ground footstep sound. */
@@ -1633,16 +1635,13 @@ public final class CompanionManager {
         if (state.mode == FollowMode.WAIT && state.waitSpot != null) {
             radius = plugin.waitThreatRadius() + WAIT_WANDER_RADIUS;
         }
-        // A companion that has just let a mob go because it was pulled off its post needs a
-        // moment to walk back before it fights again. Otherwise the same mob pulls it out
-        // again the moment it arrives, and the companion walks out and back for ever.
-        if (state.leashBreakTick != Long.MIN_VALUE
-                && Bukkit.getCurrentTick() - state.leashBreakTick < LEASH_BREAK_TICKS) {
-            return null;
-        }
-        // The companion is back on its post, so the break is over.
-        state.leashBreakTick = Long.MIN_VALUE;
+        long currentTick = Bukkit.getCurrentTick();
+        // A mob the companion has just let go is not picked up again for a moment, so the
+        // companion can walk back before it is pulled out again. The pause is for that one
+        // mob: another hostile that comes close is still fought, so the companion is never
+        // standing next to a mob it refuses to touch.
         double radiusSquared = radius * radius;
+        double ownerReach = plugin.attackSearchRadius() * 2.0;
 
         LivingEntity best = null;
         double bestDistance = radiusSquared;
@@ -1652,6 +1651,10 @@ public final class CompanionManager {
                 continue;
             }
             if (!living.isValid() || living.isDead()) {
+                continue;
+            }
+            // The mob the companion just let go: it stays off the list for a moment.
+            if (state.releasedTargetsUntil.containsKey(living.getUniqueId())) {
                 continue;
             }
             // A mob that is actually coming for the owner or for a companion is a threat, in
@@ -1678,6 +1681,16 @@ public final class CompanionManager {
             // walk out, drop the fight at the leash, and turn straight back to the same mob.
             if (state.mode == FollowMode.WAIT && state.waitSpot != null
                     && !withinLeash(living, state.waitSpot, plugin.waitThreatRadius())) {
+                continue;
+            }
+            // A companion does not chase a mob that has run out of its owner's reach. The
+            // same rule is applied here as to the fight it is already in, so the companion
+            // cannot ignore a mob that is right next to it and then chase it again: the mob
+            // is out of reach either way, and picking it up would start the chase again
+            // only to drop it once more.
+            if (state.mode != FollowMode.WAIT
+                    && isOutOfReach(living.getLocation().distanceSquared(owner.getLocation()),
+                    ownerReach)) {
                 continue;
             }
             double distance = living.getLocation().distanceSquared(npcLocation);
@@ -1847,7 +1860,7 @@ public final class CompanionManager {
      * that stepped one block out of reach, and re-picks when the mob dies or the grace expires.</p>
      */
     private LivingEntity resolveAttackTarget(Mannequin npc, Player owner, FollowState state,
-                                             long currentTick) {
+                                             long currentTick, double heldReach) {
         if (state.attackTarget != null) {
             Entity existing = Bukkit.getEntity(state.attackTarget);
             // The grace check is skipped on the very first pick, because subtracting the
@@ -1860,12 +1873,39 @@ public final class CompanionManager {
                 // companion is not a stray that follows a mob across the map: it belongs to
                 // the owner, and a chase that leads out of reach leaves it stuck far away,
                 // unable to get back. A waiting companion is on its own leash instead.
+                //
+                // The check is not held back by the grace period. The grace period is there
+                // to stop the companion from changing its mind every tick; a mob that has
+                // run out of reach is not a change of mind but the end of the chase. Waiting
+                // three seconds for it meant the companion kept walking after the mob and
+                // only then let it go.
                 if (state.mode != FollowMode.WAIT && isOutOfReach(owner, living)) {
                     state.attackTarget = null;
                     state.attackTargetTick = Long.MIN_VALUE;
+                    // The mob is left alone for a moment, so the companion does not pick the
+                    // very same fight up again on the next tick. Without this the companion
+                    // ignored the mob and chased it again, over and over, while the mob stood
+                    // right there in front of it.
+                    state.releasedTargetsUntil.put(living.getUniqueId(),
+                            currentTick + LEASH_BREAK_TICKS);
                     return null;
                 }
-                return living;
+                // A mob that is running away is still the one the companion is fighting. It
+                // is held on to as long as it stays within reach of the companion, which is
+                // further than the circle a new mob is spotted in. Looking for a new mob
+                // instead would have the companion turn back the moment the runner stepped
+                // out of the search radius, and pick the same runner up again as soon as it
+                // came back — a chase that stopped and started over and over.
+                double heldDistance = living.getLocation().distanceSquared(npc.getLocation());
+                if (stillHeld(heldDistance, heldReach)) {
+                    return living;
+                }
+                // The runner has got too far away to be worth chasing any more.
+                state.attackTarget = null;
+                state.attackTargetTick = Long.MIN_VALUE;
+                state.releasedTargetsUntil.put(living.getUniqueId(),
+                        currentTick + LEASH_BREAK_TICKS);
+                return null;
             }
         }
         LivingEntity found = findAttackTarget(npc, owner, state);
@@ -1905,6 +1945,23 @@ public final class CompanionManager {
      */
     static boolean isOutOfReach(double squaredDistance, double reach) {
         return squaredDistance > reach * reach;
+    }
+
+    /**
+     * Whether a mob the companion is already fighting is still worth holding on to.
+     *
+     * <p>A mob that is running away is still the one the companion is fighting, so it is
+     * followed as long as it stays within reach of the companion — further out than the
+     * circle a new mob is spotted in. Looking for a new mob instead would have the
+     * companion turn back the moment the runner stepped out of the search radius, and pick
+     * the same runner up again as soon as it came back.</p>
+     *
+     * @param squaredDistance the squared distance between the mob and the companion
+     * @param heldReach       the squared distance the companion will follow the mob to
+     * @return true when the mob is still being fought
+     */
+    static boolean stillHeld(double squaredDistance, double heldReach) {
+        return squaredDistance <= heldReach * heldReach;
     }
     /**
      * The spot the companion walks to in order to strike its target: within melee reach, on the
@@ -2377,6 +2434,10 @@ public final class CompanionManager {
                 cancel(key);
                 return;
             }
+            // The list of mobs that were let go is cleaned here, so it cannot grow while the
+            // companion has nothing to fight.
+            long now = Bukkit.getCurrentTick();
+            state.releasedTargetsUntil.entrySet().removeIf(entry -> now >= entry.getValue());
             if (!npc.getWorld().equals(owner.getWorld())) {
                 // A waiting companion stays where it was left, even in another world: pulling it
                 // back to the owner would undo the whole point of the command.
@@ -2437,7 +2498,17 @@ public final class CompanionManager {
             // a hostile mob that is coming for its owner or for the companion itself. The search
             // is centred on the companion, so a waiting companion defends the ground it was told
             // to hold and never leaves to chase the owner across the map.
-            LivingEntity attackTarget = resolveAttackTarget(npc, owner, state, currentTick);
+            // A mob the companion is already fighting is held on to as long as it stays
+            // within reach of the companion. That reach is wider than the circle a new mob
+            // is spotted in, so a mob that runs is followed instead of being dropped and
+            // picked up again. A companion that throws keeps it for as long as the throw
+            // could still reach.
+            CompanionWeapons.Weapon heldWeapon = CompanionWeapons.of(state.archetype);
+            double heldReach = heldWeapon != null && heldWeapon.isRanged()
+                    ? RANGED_THROW_RANGE
+                    : plugin.attackSearchRadius() * 2.0;
+            LivingEntity attackTarget = resolveAttackTarget(npc, owner, state, currentTick,
+                    heldReach);
             if (attackTarget != null) {
                 targetSpot = combatSpot(npc, state, attackTarget, currentTick);
             }
@@ -2453,12 +2524,14 @@ public final class CompanionManager {
             if (attackTarget != null && waitMode && state.waitSpot != null) {
                 double leash = plugin.waitThreatRadius();
                 if (npcLocation.distanceSquared(state.waitSpot) > leash * leash) {
+                    // The mob is let go for a moment, so the companion can walk back to its post
+                    // without being pulled out again by the same fight. Only that mob is
+                    // paused: another hostile that comes close is still fought.
+                    state.releasedTargetsUntil.put(attackTarget.getUniqueId(),
+                            currentTick + LEASH_BREAK_TICKS);
                     attackTarget = null;
                     state.attackTarget = null;
                     state.attackTargetTick = Long.MIN_VALUE;
-                    // The mob is let go for a moment, so the companion can walk back to its post
-                    // without being pulled out again by the same fight.
-                    state.leashBreakTick = currentTick;
                     targetSpot = waitSpot(npc, state, currentTick);
                 }
             }

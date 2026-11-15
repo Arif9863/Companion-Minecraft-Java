@@ -45,6 +45,23 @@ public final class ChaseRulesTest {
                 CompanionManager.isOutOfReach(reach * reach, reach));
 
         System.out.println();
+        System.out.println("=== a mob already being fought is held on to further out ===");
+        // A new mob is spotted within the search radius, but the one the companion is
+        // already fighting is followed further than that. Otherwise a mob that runs would be
+        // dropped the moment it stepped out of the search radius and picked up again as
+        // soon as it came back — a chase that stopped and started over and over.
+        double searchRadius = 8.0;
+        double heldReach = searchRadius * 2.0;
+        check("a mob inside the search radius is spotted", true,
+                withinReach(4.0, searchRadius));
+        check("a mob outside the search radius is not spotted", false,
+                withinReach(10.0, searchRadius));
+        check("but the mob being fought is held on to at ten blocks", true,
+                CompanionManager.stillHeld(10.0 * 10.0, heldReach));
+        check("and it is let go past the held reach", false,
+                CompanionManager.stillHeld(20.0 * 20.0, heldReach));
+
+        System.out.println();
         System.out.println("=== the leash is measured from the post, not from the companion ===");
         TestWorld testWorld = new TestWorld();
         World world = testWorld.proxy();
@@ -62,6 +79,10 @@ public final class ChaseRulesTest {
 
     private static boolean withinLeash(Location mob, Location post, double leash) {
         return mob.distanceSquared(post) <= leash * leash;
+    }
+
+    private static boolean withinReach(double distance, double reach) {
+        return distance <= reach;
     }
 
     private static void check(String label, boolean expected, boolean actual) {

@@ -221,13 +221,22 @@ hostile mob that is coming for its owner or for the companion itself, in every m
 - **The leash is measured from the post, not from the companion.** A mob that has already pulled
   the companion out of its post is not picked up again. Measured from the companion instead, the
   same mob would pull it out again the moment it got back, and the companion would walk out and
-  back for ever instead of holding its ground. After letting a mob go, the companion has a
-  two-second pause before it takes on a new fight, so it can walk back to its post first.
+  back for ever instead of holding its ground. After letting a mob go, that one mob is left
+  alone for two seconds so the companion can walk back to its post first — another mob that
+  comes close in the meantime is still fought.
 - **A companion does not chase a mob out of reach.** The mob has to stay within twice the attack
   search radius of the *owner*. A companion that chases a mob which keeps running walks away from
   its owner with it, and once it is out of reach there is no route back — it would be stuck
   wherever the chase ended. Letting the mob go and walking back to the owner is what keeps the
-  companion where it belongs.
+  companion where it belongs. The same rule applies to picking a mob up in the first place, so
+  the companion cannot ignore a mob standing right in front of it and chase it again: the mob is
+  out of reach either way, and taking it on would only start the chase to drop it once more.
+- **A mob that runs away is still fought.** A new mob is spotted within the attack search
+  radius, but the one the companion is already fighting is followed further than that — twice
+  the radius, or the full throw range for a companion that throws. Without this the companion
+  turned back the moment the runner stepped out of the search radius and picked the same runner
+  up again as soon as it came back, so the chase stopped and started over and over. A mob that
+  has run past that distance is let go.
 - **A companion that cannot reach its target walks back instead of standing still.** When there
   is no route to the mob, the companion looks for a route to its owner and takes that. A route
   home exists far more often than a route to a fleeing mob, and it puts the companion back in
