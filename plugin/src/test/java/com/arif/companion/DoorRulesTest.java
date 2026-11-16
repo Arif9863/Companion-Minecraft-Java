@@ -92,6 +92,16 @@ public final class DoorRulesTest {
         List<Vector> route = PathPlanner.findPath(world, new Location(world, 0.5, 1.0, 2.5),
                 new Location(world, 7.5, 1.0, 2.5), 16, false, false, false);
         check("a route through the door exists", true, !route.isEmpty());
+        // The waypoint for the doorway must be at floor level. The door itself occupies the
+        // feet block; using the top of its collision shape as the standing height would make
+        // the companion think it has to jump a block just to walk through the door.
+        Vector doorWaypoint = route.stream()
+                .filter(point -> point.getBlockX() == 4 && point.getBlockZ() == 2)
+                .findFirst().orElse(null);
+        check("the doorway waypoint stays at floor height", true,
+                doorWaypoint != null && Math.abs(doorWaypoint.getY() - 1.0) < 0.001);
+        check("the doorway does not trigger a step-up jump", false,
+                doorWaypoint != null && doorWaypoint.getY() - 1.0 > 0.6);
         // The route reaches the doorway as its fourth waypoint. The door is looked for a few
         // waypoints ahead of the companion, so it comes into view once the companion is
         // walking towards it — which is the only moment it is opened anyway.
@@ -166,16 +176,17 @@ public final class DoorRulesTest {
                         .contains(new Location(world, 4.0, 1.0, 2.0)));
 
         System.out.println();
-        System.out.println("=== the block a waypoint stands on is worked out correctly ===");
-        // A waypoint at a whole number is the top of a full block, so the block it is in is
-        // the one below. This is what puts the door of a doorway at the right height.
-        check("a waypoint at a whole number is the block below it", true,
-                CompanionManager.blockOfWaypoint(new Vector(4.5, 2.0, 2.5)) == 1);
-        // A waypoint on a carpet sits inside the block, so the block it is in is that one.
-        check("a waypoint in between is the block it starts in", true,
-                CompanionManager.blockOfWaypoint(new Vector(4.5, 1.0625, 2.5)) == 1);
-        check("a waypoint on the floor is the block it starts in", true,
-                CompanionManager.blockOfWaypoint(new Vector(4.5, 1.0, 2.5)) == 0);
+        System.out.println("=== the waypoint at a doorway sits on the floor ===");
+        // A waypoint at a whole number is the floor the companion walks on. The door above it
+        // is the block it walks through, and the top of the door's shape must never be used as
+        // the standing height — that is what made the companion hop in front of every door.
+        Vector doorway = route.stream()
+                .filter(point -> point.getBlockX() == 4 && point.getBlockZ() == 2)
+                .findFirst().orElse(null);
+        check("the doorway waypoint is at the floor", true,
+                doorway != null && doorway.getY() == 1.0);
+        check("the doorway waypoint does not ask for a jump", false,
+                doorway != null && doorway.getY() - 1.0 > 0.6);
     }
 
     private static BlockData proxy(Class<?> type, boolean open) {

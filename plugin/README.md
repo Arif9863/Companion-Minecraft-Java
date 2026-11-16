@@ -307,6 +307,7 @@ Mannequins are not `Mob` and have no vanilla pathfinder, so the plugin computes 
 - **Parkour.** All three companions — Yui, Sandrone, and Eris — share the same jump behavior. A gap of up to three blocks can be crossed; the companion can also land on a far side one block higher or up to four blocks lower. Lower jumps require an open gap, a clear fall shaft, and a solid safe landing floor.
 - **Climbing onto a ledge.** A far side that sits one block higher is jumped onto rather than merely jumped at. The companion aims at the middle of that block and matches its speed to the distance, so it arrives while the jump is still high enough to land on top — arriving too early would sail over the ledge, and too late would drop back into the gap. A single short hop covers the last fraction of a block.
 - **Carpets are walked over, not jumped over.** A carpet is a sixteenth of a block tall, so the route's waypoint sits on its surface rather than a block above it, and the companion does not jump along on every carpet it crosses. A carpet also does not make the ground solid: a carpet laid over a hole is still a hole.
+- **Doors are walked through, not climbed over.** A door fills its own block, but the companion walks through it with its feet on the floor, so the waypoint for a doorway sits at the floor rather than on top of the door. Measuring the top of the door put the waypoint a block too high, and the companion took that as a step to climb: it hopped up and down in front of every door it opened before squeezing through.
 - **Never into the void.** When the companion has no route for 5 seconds, or is more than 8 blocks below you while standing on ground, it is rescued to its mode's safe landing spot.
 - **Emergency teleports are distance-based** (`teleport-distance`, `close-teleport-distance`, both 24 blocks by default). A blocked route alone never causes a teleport.
 - **Doors are found on the route, not by proximity.** A companion works a door only when the door is on the route it is actually walking and it has arrived at it. A companion waiting in a house does not open the door beside it, and a door around the corner is left alone until the companion is really there. The way a villager finds its door in vanilla, and it is what stops a door being opened that nobody then walks through.
@@ -418,4 +419,5 @@ carpet for a hole. `LineOfSightTest` covers the check that keeps a thrown triden
 being aimed into a wall. `ChaseRulesTest` covers the reach a companion will follow a mob to.
 `DoorRulesTest` covers which doors a companion may work, that a door is only opened when it
 is on the route and within reach, that a door the companion is not walking through is
-left alone, and which sound each kind of wood and each copper door makes.
+left alone, that the waypoint at a doorway sits on the floor rather than on top of the door,
+and which sound each kind of wood and each copper door makes.

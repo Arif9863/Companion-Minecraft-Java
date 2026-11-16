@@ -3486,16 +3486,18 @@ public final class CompanionManager {
             org.bukkit.util.Vector waypoint = path.get(i);
             int x = (int) Math.floor(waypoint.getX());
             int z = (int) Math.floor(waypoint.getZ());
-            int feet = blockOfWaypoint(waypoint);
-            // A door in a doorway is a block of its own, and the companion walks through it.
-            // The door's lower half is the block the companion stands in and its upper half
-            // sits one block above it.
+            int floor = (int) Math.floor(waypoint.getY());
+            // The block the companion's body is in when it stands on the waypoint. A door in
+            // its way stands in exactly that block, and a door standing on the floor it is
+            // walking over stands in the block just above that floor — which is the same
+            // block. The upper half of a two-block door is checked as well, so a door is
+            // found whichever half the route names.
             for (int dy = 0; dy <= 1; dy++) {
-                Block block = world.getBlockAt(x, feet + dy, z);
+                Block block = world.getBlockAt(x, floor + dy, z);
                 if (!isDoorOrGate(block)) {
                     continue;
                 }
-                Location door = new Location(world, x, feet + dy, z);
+                Location door = lowerHalf(world, x, floor + dy, z, block);
                 if (!doors.contains(door)) {
                     doors.add(door);
                 }
@@ -3505,20 +3507,18 @@ public final class CompanionManager {
     }
 
     /**
-     * The block the companion's feet are in when it stands on the given waypoint.
+     * The spot a door is remembered by, which is always its lower half.
      *
-     * <p>A waypoint carries the height the feet rest at, which is the top of whatever the
-     * companion is standing on. A full block — and a closed door, whose shape fills its own
-     * block — ends at a whole number, so the block it is is one below. A carpet or a slab ends
-     * in between, and the block it is in is the one it starts in.</p>
+     * <p>A wooden door is two blocks tall, and the route may name either of them. Both have to
+     * be remembered as the same door, or the companion would try to work it twice and the
+     * sound of the swing would be heard twice.</p>
      */
-    static int blockOfWaypoint(org.bukkit.util.Vector waypoint) {
-        double height = waypoint.getY();
-        int whole = (int) Math.floor(height);
-        if (height == whole) {
-            return whole - 1;
+    private static Location lowerHalf(World world, int x, int y, int z, Block block) {
+        if (block.getBlockData() instanceof Bisected bisected
+                && bisected.getHalf() == Bisected.Half.TOP) {
+            return new Location(world, x, y - 1, z);
         }
-        return whole;
+        return new Location(world, x, y, z);
     }
 
     /**

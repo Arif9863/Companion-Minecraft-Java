@@ -762,12 +762,21 @@ final class PathPlanner {
      * <p>This is the top of the block's collision shape. For a full block that is the block's
      * own height; for a carpet, a slab or a stair it is the part of the block that actually
      * sticks up.</p>
+     *
+     * <p>A door and a fence gate are the exception: the companion walks <b>through</b> them, so
+     * its feet stay on the floor it is standing on rather than on top of the door. A closed door
+     * fills its own block, and measuring the top of that shape put the waypoint a block too
+     * high, which made the companion believe it had to climb over the doorway — it hopped up
+     * and down in front of every door it opened.</p>
      */
     private static double surfaceHeight(World world, Node node) {
         if (!isChunkLoaded(world, node)) {
             return node.y();
         }
         Block block = world.getBlockAt(node.x(), node.y(), node.z());
+        if (isOpenable(block)) {
+            return node.y();
+        }
         double top = node.y();
         for (org.bukkit.util.BoundingBox box : block.getCollisionShape().getBoundingBoxes()) {
             top = Math.max(top, node.y() + box.getMaxY());
