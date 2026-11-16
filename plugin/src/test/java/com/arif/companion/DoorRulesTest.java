@@ -49,6 +49,39 @@ public final class DoorRulesTest {
                 CompanionManager.isDoorOrGate(block(Material.BARREL, 1.0, null)));
 
         System.out.println();
+        System.out.println("=== a door sound is chosen by its material and action ===");
+        check("oak door opens with the wooden sound", "block.wooden_door.open",
+                CompanionManager.doorSound(Material.OAK_DOOR, true));
+        check("spruce door closes with the wooden sound", "block.wooden_door.close",
+                CompanionManager.doorSound(Material.SPRUCE_DOOR, false));
+        check("birch door opens with the wooden sound", "block.wooden_door.open",
+                CompanionManager.doorSound(Material.BIRCH_DOOR, true));
+        check("copper door opens with its own sound", "block.copper_door.open",
+                CompanionManager.doorSound(Material.COPPER_DOOR, true));
+        check("a waxed copper door keeps the copper sound", "block.copper_door.close",
+                CompanionManager.doorSound(Material.WAXED_COPPER_DOOR, false));
+        check("bamboo door uses the bamboo sound", "block.bamboo_wood_door.open",
+                CompanionManager.doorSound(Material.BAMBOO_DOOR, true));
+        check("cherry door uses the cherry sound", "block.cherry_wood_door.close",
+                CompanionManager.doorSound(Material.CHERRY_DOOR, false));
+        check("crimson door uses the nether sound", "block.nether_wood_door.open",
+                CompanionManager.doorSound(Material.CRIMSON_DOOR, true));
+        check("warped door uses the nether sound", "block.nether_wood_door.close",
+                CompanionManager.doorSound(Material.WARPED_DOOR, false));
+        check("mangrove door uses the nether sound", "block.nether_wood_door.open",
+                CompanionManager.doorSound(Material.MANGROVE_DOOR, true));
+        check("a nether gate uses the nether gate sound", "block.nether_wood_fence_gate.open",
+                CompanionManager.gateSound(Material.CRIMSON_FENCE_GATE, true));
+        check("a gate opens with the gate sound", "block.fence_gate.open",
+                CompanionManager.gateSound(Material.OAK_FENCE_GATE, true));
+        check("a bamboo gate uses the bamboo gate sound", "block.bamboo_wood_fence_gate.close",
+                CompanionManager.gateSound(Material.BAMBOO_FENCE_GATE, false));
+        check("a trapdoor has no companion door sound", null,
+                CompanionManager.doorSound(Material.OAK_TRAPDOOR, true));
+        check("a barrel has no companion door sound", null,
+                CompanionManager.doorSound(Material.BARREL, true));
+
+        System.out.println();
         System.out.println("=== a door on the route is found ===");
         TestWorld testWorld = new TestWorld();
         World world = testWorld.proxy();
@@ -172,5 +205,15 @@ public final class DoorRulesTest {
     private static void check(String label, boolean expected, boolean actual) {
         String result = expected == actual ? "OK  " : "FAIL";
         System.out.println(String.format("%-4s %s", result, label));
+    }
+
+    /** Checks a value that is a sound key, where both being null means they agree. */
+    private static void check(String label, String expected, String actual) {
+        boolean same = expected == null ? actual == null : expected.equals(actual);
+        String result = same ? "OK  " : "FAIL";
+        System.out.println(String.format("%-4s %s", result, label));
+        if (!same) {
+            System.out.println("     expected " + expected + " but got " + actual);
+        }
     }
 }

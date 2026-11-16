@@ -311,7 +311,8 @@ Mannequins are not `Mob` and have no vanilla pathfinder, so the plugin computes 
 - **Emergency teleports are distance-based** (`teleport-distance`, `close-teleport-distance`, both 24 blocks by default). A blocked route alone never causes a teleport.
 - **Doors are found on the route, not by proximity.** A companion works a door only when the door is on the route it is actually walking and it has arrived at it. A companion waiting in a house does not open the door beside it, and a door around the corner is left alone until the companion is really there. The way a villager finds its door in vanilla, and it is what stops a door being opened that nobody then walks through.
 - **Wooden doors, copper doors and fence gates are the only things operated.** An iron door, a trapdoor, a barrel or any other openable block is left exactly as it is, so the decorations in a house stay as they were put there.
-- **Doors are closed again after they are walked through.** The door the companion is standing in stays open; a door further back is shut once it is no longer on the route and no other companion is still heading for it. A door somebody else left open is shut the same way, so a house the owner forgot to close does not stand open all night.
+- **Doors and fence gates are closed again after they are walked through.** The door the companion is standing in stays open; a door further back is shut once it is no longer on the route and no other companion is still heading for it. A door somebody else left open is shut the same way, so a house the owner forgot to close does not stand open all night.
+- **A door makes its own sound.** Opening or closing one plays the vanilla block sound at the door, so everyone nearby hears where it came from. Each kind of wood has its own sound — bamboo, cherry and the nether woods each creak differently — and copper doors have one of their own, the way they do in vanilla. A swing plays once, including for a two-block door, and a door that was already open and is asked to open again stays silent.
 - **Swimming works.** Water is a valid route node, and a companion in water swims after you instead of teleporting.
 
 ## Skin methods
@@ -416,5 +417,5 @@ which blocks may be opened. `GapAheadTest` covers the gap check that used to mis
 carpet for a hole. `LineOfSightTest` covers the check that keeps a thrown trident from
 being aimed into a wall. `ChaseRulesTest` covers the reach a companion will follow a mob to.
 `DoorRulesTest` covers which doors a companion may work, that a door is only opened when it
-is on the route and within reach, and that a door the companion is not walking through is
-left alone.
+is on the route and within reach, that a door the companion is not walking through is
+left alone, and which sound each kind of wood and each copper door makes.

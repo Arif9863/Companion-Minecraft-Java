@@ -226,6 +226,9 @@ public final class CompanionManager {
     /** How close a ranged companion stays to its target, so it keeps throwing instead of closing in. */
     private static final double RANGED_KEEP_DISTANCE = 8.0;
 
+    /** Volume of a door sound played by a companion. */
+    private static final float DOOR_SOUND_VOLUME = 1.0f;
+
     /**
      * How high above its feet a companion's eyes are, in blocks.
      *
@@ -3847,9 +3850,20 @@ public final class CompanionManager {
      *
      * <p>Vanilla stores {@code open} on each door half independently for rendering, so only flipping
      * one half would leave the other visually closed.</p>
+     *
+     * <p>The door makes its own noise when it swings. Vanilla plays that noise when a player
+     * interacts with the door, and a companion is not a player: it works the door by setting the
+     * block data directly, so the swing would otherwise be silent. The sound is played here
+     * instead, at the door, for everyone nearby — which is what a villager's door sounds like.</p>
      */
     private static void setDoorState(Block block, boolean open) {
-        if (block.getBlockData() instanceof Openable openable && openable.isOpen() != open) {
+        if (!(block.getBlockData() instanceof Openable openable)) {
+            return;
+        }
+        // The sound belongs to the swing, not to the block being written. A door that is already
+        // open and is asked to open again has not swung, so it must not be heard.
+        boolean swings = openable.isOpen() != open;
+        if (swings) {
             openable.setOpen(open);
             block.setBlockData(openable, false);
         }
@@ -3862,6 +3876,128 @@ public final class CompanionManager {
                 other.setBlockData(otherOpenable, false);
             }
         }
+        if (swings) {
+            playDoorSound(block, open);
+        }
+    }
+
+    /**
+     * Plays the sound a door or fence gate makes as it swings.
+     *
+     * <p>Played at the door itself, so everyone standing nearby hears where it came from. The
+     * category is {@code BLOCKS}, which is where a door belongs — a door heard as a creature
+     * noise would be wrong, and the player would be able to walk the sound off by turning the
+     * volume of their own footsteps down.</p>
+     */
+    private static void playDoorSound(Block block, boolean open) {
+        World world = block.getWorld();
+        if (world == null) {
+            return;
+        }
+        String sound = block.getBlockData() instanceof Gate
+                ? gateSound(block.getType(), open) : doorSound(block.getType(), open);
+        if (sound == null) {
+            return;
+        }
+        // The sound of the block, at the middle of the door and a little above the floor.
+        Location at = block.getLocation().add(0.5, 0.5, 0.5);
+        world.playSound(at, sound, SoundCategory.BLOCKS, DOOR_SOUND_VOLUME, 1.0f);
+    }
+
+    /**
+     * The sound a door or fence gate of the given material makes.
+     *
+     * <p>Each kind of wood has its own sound, the way it does in vanilla, so an oak door does
+     * not creak like a bamboo one. The copper door has a sound of its own.</p>
+     *
+     * @param open whether the door is being opened rather than closed
+     * @return the sound, or null when the material has none this plugin knows
+     */
+    static String doorSound(Material material, boolean open) {
+        String kind = doorSoundKind(material);
+        if (kind == null) {
+            return null;
+        }
+        return switch (kind) {
+            case "copper" -> open ? "block.copper_door.open" : "block.copper_door.close";
+            case "bamboo" -> open
+                    ? "block.bamboo_wood_door.open" : "block.bamboo_wood_door.close";
+            case "cherry" -> open
+                    ? "block.cherry_wood_door.open" : "block.cherry_wood_door.close";
+            case "nether" -> open
+                    ? "block.nether_wood_door.open" : "block.nether_wood_door.close";
+            default -> open ? "block.wooden_door.open" : "block.wooden_door.close";
+        };
+    }
+
+    /**
+     * The sound a fence gate of the given material makes.
+     *
+     * <p>A gate is not a door, so it has its own set of sounds. Bamboo, cherry and nether wood
+     * each have their own; everything else uses the plain wooden one.</p>
+     *
+     * @param open whether the gate is being opened rather than closed
+     * @return the sound, or null when the material has none this plugin knows
+     */
+    static String gateSound(Material material, boolean open) {
+        String kind = doorSoundKind(material);
+        if (kind == null) {
+            return null;
+        }
+        return switch (kind) {
+            case "bamboo" -> open
+                    ? "block.bamboo_wood_fence_gate.open" : "block.bamboo_wood_fence_gate.close";
+            case "cherry" -> open
+                    ? "block.cherry_wood_fence_gate.open" : "block.cherry_wood_fence_gate.close";
+            case "nether" -> open
+                    ? "block.nether_wood_fence_gate.open" : "block.nether_wood_fence_gate.close";
+            default -> open ? "block.fence_gate.open" : "block.fence_gate.close";
+        };
+    }
+
+    /**
+     * The family of wood a door or gate is made of, which decides how it sounds.
+     *
+     * <p>Only the woods vanilla gives a sound of their own are named. The rest — oak, spruce,
+     * birch, jungle, acacia, dark oak, pale oak, poplar, crimson, warped and mangrove — all
+     * share the plain wooden sound.</p>
+     *
+     * @return the family, or null when the material is not a door or gate
+     */
+    static String doorSoundKind(Material material) {
+        String name = material.name();
+        if (name.endsWith("_DOOR")) {
+            if (name.contains("COPPER")) {
+                return "copper";
+            }
+            if (name.startsWith("BAMBOO")) {
+                return "bamboo";
+            }
+            if (name.startsWith("CHERRY")) {
+                return "cherry";
+            }
+            // The nether woods are the crimson, warped and mangrove ones. Vanilla gives them
+            // their own sound, and the crimson one is the sound the nether wood door makes.
+            if (name.startsWith("CRIMSON") || name.startsWith("WARPED")
+                    || name.startsWith("MANGROVE")) {
+                return "nether";
+            }
+            return "wood";
+        }
+        if (name.endsWith("_FENCE_GATE")) {
+            if (name.startsWith("BAMBOO")) {
+                return "bamboo";
+            }
+            if (name.startsWith("CHERRY")) {
+                return "cherry";
+            }
+            if (name.startsWith("CRIMSON") || name.startsWith("WARPED")
+                    || name.startsWith("MANGROVE")) {
+                return "nether";
+            }
+            return "wood";
+        }
+        return null;
     }
 
     /**
