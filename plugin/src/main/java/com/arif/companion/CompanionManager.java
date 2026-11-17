@@ -16,6 +16,7 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.Openable;
 import org.bukkit.block.data.type.Gate;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
@@ -175,6 +176,15 @@ public final class CompanionManager {
      * walk 24 blocks away.</p>
      */
     private static final long NO_PATH_RESCUE_TICKS = 100L;
+    /**
+     * How long a chase may fail to find a route before the target is given up.
+     *
+     * <p>10 seconds (200 ticks). A fight is held until the mob dies, so the only other way it
+     * ends is the companion proving it cannot reach the mob at all. Ten seconds of failed routes
+     * is that proof: the target is released, the companion walks home (or back to its post), and
+     * the mob is left alone for the same while before it may be picked up again.</p>
+     */
+    private static final long CHASE_ABANDON_TICKS = 200L;
     private static final long FAILED_PLAN_RETRY_TICKS = 20L;
     private static final int PATH_RADIUS = 48;
     /**
@@ -248,17 +258,6 @@ public final class CompanionManager {
 
     /** How long Ei's spear thrust animation lasts, in ticks. */
     private static final int JAB_ANIMATION_TICKS = 4;
-
-    /**
-     * How long a companion leaves a mob alone after it was pulled off its post or out of its
-     * owner's reach, in ticks.
-     *
-     * <p>Two seconds is enough for the companion to walk back onto its post and start its
-     * wander again. Without the pause the same mob pulls it straight back out, and the
-     * companion walks out and back for ever instead of holding its ground. The pause applies
-     * to that one mob only: another one that comes close is still fought.</p>
-     */
-    private static final long LEASH_BREAK_TICKS = 40L;
 
     /** Extra random ticks so two companions never glance in lockstep. */
     private static final long GLANCE_DURATION_VARIANCE_TICKS = 20L;
@@ -439,13 +438,6 @@ public final class CompanionManager {
      * lets it strike.</p>
      */
     private static final double ATTACK_STOP_DISTANCE = 2.8;
-    /**
-     * How long a mob keeps being hunted after it stopped being a valid target.
-     *
-     * <p>60 ticks (3 seconds). Without this a mob that steps out of range would make the companion
-     * turn back and forth at the edge of the search radius.</p>
-     */
-    private static final long ATTACK_TARGET_GRACE_TICKS = 60L;
     /** How often a new marked hostile may be reported in owner chat (10 seconds). */
     private static final long MARKER_ALERT_COOLDOWN_TICKS = 200L;
     /** Particle marker interval: every 3 ticks so it stays visible without flooding particles. */
@@ -552,12 +544,10 @@ public final class CompanionManager {
         private long lastCycleClickTick = Long.MIN_VALUE;
         /** The mob this companion is currently engaging, or null when none. */
         private UUID attackTarget;
-        /** Tick at which the current attack target was picked, used for the grace period. */
-        private long attackTargetTick = Long.MIN_VALUE;
         /**
-         * Hostile mobs the companion just let go because they pulled it off its post or out
-         * of its owner's reach. They are not picked up again while the companion returns,
-         * but another mob can still be defended against.
+         * Hostile mobs the companion just let go because they could not be reached. They are
+         * not picked up again for a moment, so the companion does not walk straight back out
+         * to the same fight; another mob can still be defended against.
          */
         private final Map<UUID, Long> releasedTargetsUntil = new HashMap<>();
         /** Tick of the last swing, used to space the melee hits out. */
@@ -618,6 +608,8 @@ public final class CompanionManager {
         private long waitNextTurnTick = Long.MIN_VALUE;
         /** Whether the companion is currently resting between strolls. */
         private boolean waitSpotPaused;
+        /** The player this companion belongs to, for persisting wait spots and similar state. */
+        private UUID ownerId;
         /** The archetype this companion belongs to — Yui or Sandrone. */
         private String archetype;
         /** Stable formation facing, updated from the owner's movement direction, never camera look. */
@@ -667,6 +659,11 @@ public final class CompanionManager {
      * owner chose instead of silently reverting to FOLLOW.</p>
      */
     private final Map<CompanionKey, FollowMode> savedModes = new HashMap<>();
+    /**
+     * Last wait anchor per companion, loaded from disk and refreshed while a companion holds a
+     * post in WAIT mode.
+     */
+    private final Map<CompanionKey, Location> savedWaitSpots = new HashMap<>();
     /**
      * Eris's permanent owner.
      *
@@ -719,6 +716,7 @@ public final class CompanionManager {
     public CompanionManager(CompanionNpcsPlugin plugin) {
         this.plugin = plugin;
         loadSavedModes();
+        loadSavedWaitSpots();
         loadErisAccess();
         loadErisOwner();
         // When a companion's support ability fires, she says her own assist line about it.
@@ -1105,13 +1103,114 @@ public final class CompanionManager {
         }
     }
 
-    /** Saves all chosen modes. Called only when a player switches modes. */
+    /** Loads persisted wait anchors from {@code plugins/CompanionNPCs/modes.yml}. */
+    private void loadSavedWaitSpots() {
+        File file = new File(plugin.getDataFolder(), "modes.yml");
+        if (!file.isFile()) {
+            return;
+        }
+        FileConfiguration config = YamlConfiguration.loadConfiguration(file);
+        for (String ownerId : config.getKeys(false)) {
+            UUID uuid;
+            try {
+                uuid = UUID.fromString(ownerId);
+            } catch (IllegalArgumentException ex) {
+                continue;
+            }
+            ConfigurationSection section = config.getConfigurationSection(ownerId + ".wait-spots");
+            if (section == null) {
+                continue;
+            }
+            for (String archetype : section.getKeys(false)) {
+                if (!ARCHETYPES.contains(archetype)) {
+                    continue;
+                }
+                Location spot = locationFromConfig(section.getConfigurationSection(archetype));
+                if (spot == null) {
+                    continue;
+                }
+                savedWaitSpots.put(new CompanionKey(uuid, archetype), spot);
+            }
+        }
+    }
+
+    private static Location locationFromConfig(ConfigurationSection section) {
+        if (section == null) {
+            return null;
+        }
+        String worldName = section.getString("world");
+        if (worldName == null || worldName.isBlank()) {
+            return null;
+        }
+        World world = Bukkit.getWorld(worldName);
+        if (world == null) {
+            return null;
+        }
+        if (!section.contains("x") || !section.contains("y") || !section.contains("z")) {
+            return null;
+        }
+        Location location = new Location(world,
+                section.getDouble("x"),
+                section.getDouble("y"),
+                section.getDouble("z"));
+        if (section.contains("yaw")) {
+            location.setYaw((float) section.getDouble("yaw"));
+        }
+        if (section.contains("pitch")) {
+            location.setPitch((float) section.getDouble("pitch"));
+        }
+        return location;
+    }
+
+    private void writeLocationToConfig(FileConfiguration config, String basePath, Location location) {
+        if (location == null || location.getWorld() == null) {
+            return;
+        }
+        config.set(basePath + ".world", location.getWorld().getName());
+        config.set(basePath + ".x", location.getX());
+        config.set(basePath + ".y", location.getY());
+        config.set(basePath + ".z", location.getZ());
+        config.set(basePath + ".yaw", (double) location.getYaw());
+        config.set(basePath + ".pitch", (double) location.getPitch());
+    }
+
+    private void recordWaitSpot(CompanionKey key, Location spot) {
+        if (spot == null || spot.getWorld() == null) {
+            return;
+        }
+        savedWaitSpots.put(key, spot.clone());
+        saveSavedModes();
+    }
+
+    /** Saves live WAIT anchors for every companion this player still has, before they despawn. */
+    private void persistWaitSpotsForOwner(UUID ownerId) {
+        boolean dirty = false;
+        for (String archetype : ARCHETYPES) {
+            CompanionKey key = new CompanionKey(ownerId, archetype);
+            FollowState state = followStates.get(key);
+            if (state == null || state.mode != FollowMode.WAIT || state.waitSpot == null) {
+                continue;
+            }
+            savedWaitSpots.put(key, state.waitSpot.clone());
+            dirty = true;
+        }
+        if (dirty) {
+            saveSavedModes();
+        }
+    }
+
+    /** Saves all chosen modes and wait anchors. Called when modes or wait posts change. */
     private void saveSavedModes() {
         File file = new File(plugin.getDataFolder(), "modes.yml");
         FileConfiguration config = new YamlConfiguration();
         for (Map.Entry<CompanionKey, FollowMode> entry : savedModes.entrySet()) {
             CompanionKey key = entry.getKey();
             config.set(key.ownerId() + "." + key.archetype(), entry.getValue().name());
+        }
+        for (Map.Entry<CompanionKey, Location> entry : savedWaitSpots.entrySet()) {
+            CompanionKey key = entry.getKey();
+            String base = key.ownerId() + ".wait-spots." + key.archetype();
+            writeLocationToConfig(config, base, entry.getValue());
         }
         try {
             config.save(file);
@@ -1149,6 +1248,23 @@ public final class CompanionManager {
      * @return true when the companion was spawned
      */
     public boolean spawn(Player owner, String archetype, boolean skipOwnerCheck) {
+        return spawn(owner, archetype, skipOwnerCheck, false);
+    }
+
+    /**
+     * Spawns a companion, optionally without a sound and a line of dialogue.
+     *
+     * <p>A companion that is called answers her owner. A companion that simply appears because
+     * her owner logged in does not: the owner did not call anybody, so there is nothing to
+     * answer. Six companions answering at once when the server opens is noise, not company.</p>
+     *
+     * @param owner     player the companion belongs to
+     * @param archetype the companion to call
+     * @param skipOwnerCheck true when the caller has already checked access itself
+     * @param silent    true when the companion appears without saying or sounding anything
+     * @return true when the companion was spawned
+     */
+    public boolean spawn(Player owner, String archetype, boolean skipOwnerCheck, boolean silent) {
         if (owner == null || archetype == null) {
             return false;
         }
@@ -1174,9 +1290,130 @@ public final class CompanionManager {
         owner.addScoreboardTag(activeTag(kind));
         startFollowing(key, owner, npc, initialFormationYaw);
         // The newer companions answer when they are called.
-        dialogue.onCall(owner, kind, npc.getLocation());
+        if (!silent) {
+            dialogue.onCall(owner, kind, npc.getLocation());
+        }
         plugin.getLogger().info(() -> "Spawned " + kind + " mannequin for " + owner.getName());
+        if ("eris".equals(kind)) {
+            erisCalled = true;
+        }
         return true;
+    }
+
+    /**
+     * Spawns a companion at a specific location instead of the owner's formation.
+     *
+     * <p>Used when a companion rejoins in WAIT mode and must appear on the post it was left at.</p>
+     *
+     * @return true when the companion was spawned
+     */
+    public boolean spawnAt(Player owner, String archetype, Location spot, boolean skipOwnerCheck) {
+        return spawnAt(owner, archetype, spot, skipOwnerCheck, false);
+    }
+
+    /**
+     * Spawns a companion at a specific location, optionally without a sound and a line of
+     * dialogue.
+     *
+     * @param owner     player the companion belongs to
+     * @param archetype the companion to call
+     * @param spot      the place the companion appears at
+     * @param skipOwnerCheck true when the caller has already checked access itself
+     * @param silent    true when the companion appears without saying or sounding anything
+     * @return true when the companion was spawned
+     */
+    public boolean spawnAt(Player owner, String archetype, Location spot, boolean skipOwnerCheck,
+                           boolean silent) {
+        if (owner == null || archetype == null || spot == null || spot.getWorld() == null) {
+            return false;
+        }
+        if (!skipOwnerCheck && !plugin.mayUseYuiAndSandrone(owner.getUniqueId())) {
+            denyCompanion(owner, archetype);
+            return false;
+        }
+        String kind = archetype.toLowerCase(Locale.ROOT);
+        if ("eris".equals(kind) && !isErisOwner(owner.getUniqueId())) {
+            denyEris(owner);
+            return false;
+        }
+        CompanionKey key = new CompanionKey(owner.getUniqueId(), kind);
+        despawn(owner, kind);
+
+        // The post is worked out first: the stored height may point at the block the
+        // companion was standing on — a slab, a stair or a carpet — rather than at the free
+        // space above it.
+        Location spawnLoc = WaitPostResolver.resolve(spot);
+        if (spawnLoc == null) {
+            // The post does not fit any more, because the floor it stood on is gone. The
+            // companion appears around the owner instead of inside the wall where its post
+            // used to be, and holds that new place from then on.
+            spawnLoc = spawnFormationSpot(owner.getLocation(), kind, owner.getLocation().getYaw());
+        }
+        float formationYaw = spot.getYaw();
+        Mannequin npc = createAt(spawnLoc, kind, owner.getName());
+        if (npc == null) {
+            return false;
+        }
+
+        ownerToNpc.put(key, npc.getUniqueId());
+        owner.addScoreboardTag(activeTag(kind));
+        startFollowing(key, owner, npc, formationYaw);
+        FollowState state = followStates.get(key);
+        if (state != null && state.mode == FollowMode.WAIT) {
+            // The post it holds from now on is the place it actually appeared at. When the
+            // old post was gone, that is the spot near the owner it was put down at.
+            state.waitSpot = spawnLoc.clone();
+            recordWaitSpot(key, state.waitSpot);
+        }
+        if (!silent) {
+            dialogue.onCall(owner, kind, npc.getLocation());
+        }
+        plugin.getLogger().info(() -> "Spawned " + kind + " at saved wait post for " + owner.getName());
+        if ("eris".equals(kind)) {
+            erisCalled = true;
+        }
+        return true;
+    }
+
+    /**
+     * Brings every companion this player owns back when they join the server.
+     *
+     * <p>Group companions spawn for configured owners; Eris spawns only for her permanent owner.
+     * FOLLOW and CLOSE companions appear in formation around the owner; WAIT companions appear on
+     * the last post they were told to hold.</p>
+     */
+    public void autoSpawnAll(Player owner) {
+        if (owner == null || !owner.isOnline()) {
+            return;
+        }
+        if (plugin.mayUseYuiAndSandrone(owner.getUniqueId())) {
+            for (String archetype : PAIRED_ARCHETYPES) {
+                autoSpawnOne(owner, archetype);
+            }
+        }
+        if (isErisOwner(owner.getUniqueId())) {
+            claimEris(owner);
+            autoSpawnOne(owner, "eris");
+        }
+    }
+
+    private void autoSpawnOne(Player owner, String archetype) {
+        String kind = archetype.toLowerCase(Locale.ROOT);
+        if (hasCompanion(owner.getUniqueId(), kind)) {
+            return;
+        }
+        CompanionKey key = new CompanionKey(owner.getUniqueId(), kind);
+        FollowMode mode = savedModes.getOrDefault(key, FollowMode.FOLLOW);
+        boolean skipOwnerCheck = "eris".equals(kind);
+        // A companion that appears because its owner logged in does not answer: nobody
+        // called her. That is what keeps the server from greeting the owner with six voices
+        // the moment he comes back.
+        boolean silent = plugin.silentAutoSpawn();
+        if (shouldSpawnAtWaitPost(mode, savedWaitSpots.get(key))) {
+            spawnAt(owner, kind, savedWaitSpots.get(key), skipOwnerCheck, silent);
+            return;
+        }
+        spawn(owner, kind, skipOwnerCheck, silent);
     }
 
     /**
@@ -1608,17 +1845,19 @@ public final class CompanionManager {
      * the owner, or they are already coming for this companion. A mob that is merely standing
      * nearby is ignored, so the companion does not go on the offensive.</p>
      *
-     * <p>The search is centred on the companion itself, never on the owner. A companion that was
-     * told to wait defends its own surroundings: it does not leave the spot to rescue the owner,
-     * which is what would otherwise drag it away and leave it standing where the last mob died.</p>
+     * <p>Two circles are watched. Threats around the companion itself are found in the
+     * companion's own search radius, and threats around the owner are found in a wider circle
+     * centred on the owner. The second circle is what answers a distant attacker: a skeleton
+     * shooting arrows from outside the companion's own circle is still coming for the owner,
+     * and the companion walks out to kill it. The threat filter keeps both circles precise —
+     * only mobs actually targeting the owner or a companion are taken.</p>
      *
-     * <p>A waiting companion has a wider leash than a following one: it may step out to deal with
-     * a hostile that comes inside the ground it holds, but it is never pulled towards the owner.
-     * The leash is measured from the spot it was told to wait at, so the fight stays around that
-     * spot instead of wandering off with the mob.</p>
-     *
-     * <p>The search radius is configurable (8 blocks by default), so the owner is never left
-     * undefended for a distant fight.</p>
+     * <p>A waiting companion does not watch the owner's circle at all. It was told to hold its
+     * ground, so its fight is the one happening on its own ground: a mob that comes for the
+     * owner while the owner is far away is not its fight, and a companion left at home would
+     * otherwise walk out of the house to chase a mob the owner met on the road. It still
+     * defends itself, and it still kills a mob that comes into the ground it holds — and it
+     * follows that mob wherever it runs, until it is dead.</p>
      *
      * @return the mob to engage, or null when there is nothing to fight
      */
@@ -1632,16 +1871,40 @@ public final class CompanionManager {
         if (state.mode == FollowMode.WAIT && state.waitSpot != null) {
             radius = plugin.waitThreatRadius() + WAIT_WANDER_RADIUS;
         }
-        long currentTick = Bukkit.getCurrentTick();
-        // A mob the companion has just let go is not picked up again for a moment, so the
-        // companion can walk back before it is pulled out again. The pause is for that one
-        // mob: another hostile that comes close is still fought, so the companion is never
-        // standing next to a mob it refuses to touch.
-        double radiusSquared = radius * radius;
-        double ownerReach = plugin.attackSearchRadius() * 2.0;
 
         LivingEntity best = null;
-        double bestDistance = radiusSquared;
+        double bestDistance = Double.MAX_VALUE;
+
+        // Threats to the owner are searched around the owner, not around the companion: a
+        // distant attacker is coming for the owner, and the companion has to answer it no
+        // matter where it happens to be standing. The threat filter keeps this precise — a mob
+        // that is merely walking past the owner is not a threat and is left alone.
+        //
+        // A waiting companion is left out of this: it holds a post, and a mob that is attacking
+        // the owner on the road is not the post's fight. Its own circle below is enough.
+        if (ownerThreatSearchEnabled(state.mode)) {
+            double ownerRadius = plugin.ownerThreatRadius();
+            for (Entity entity : owner.getNearbyEntities(ownerRadius, ownerRadius, ownerRadius)) {
+                if (!(entity instanceof LivingEntity living) || !isHostileMob(living)) {
+                    continue;
+                }
+                if (!living.isValid() || living.isDead()) {
+                    continue;
+                }
+                // The mob the companion just let go: it stays off the list for a moment.
+                if (state.releasedTargetsUntil.containsKey(living.getUniqueId())) {
+                    continue;
+                }
+                if (!isThreatToParty(living, owner, npc)) {
+                    continue;
+                }
+                double distance = living.getLocation().distanceSquared(npcLocation);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    best = living;
+                }
+            }
+        }
 
         for (Entity entity : npc.getNearbyEntities(radius, radius, radius)) {
             if (!(entity instanceof LivingEntity living) || !isHostileMob(living)) {
@@ -1656,7 +1919,9 @@ public final class CompanionManager {
             }
             // A mob that is actually coming for the owner or for a companion is a threat, in
             // every mode. This stays a requirement: it is what keeps the companion from
-            // picking a fight with a mob that is merely walking past.
+            // picking a fight with a mob that is merely walking past. A waiting companion
+            // still takes such a mob when it is on its own ground — the circle this loop
+            // searches is the companion's own, so nothing far away can reach it.
             boolean threatToParty = isThreatToParty(living, owner, npc);
             // In WAIT the companion also holds its ground: a hostile that walks into the
             // watched circle is a threat to the post, even if it has not picked a target yet.
@@ -1666,28 +1931,10 @@ public final class CompanionManager {
             if (state.mode == FollowMode.WAIT && state.waitSpot != null
                     && !NEUTRAL_HOSTILE_MOBS.contains(living.getType())) {
                 double detectRadius = plugin.waitThreatRadius();
-                territorial = living.getLocation().distanceSquared(state.waitSpot)
-                        <= detectRadius * detectRadius;
+                territorial = withinWaitTerritory(living.getLocation(), state.waitSpot,
+                        detectRadius);
             }
             if (!threatToParty && !territorial) {
-                continue;
-            }
-            // A waiting companion is on a leash: it fights what comes inside the ground it
-            // holds, but it does not chase a mob out of that ground. A mob that has already
-            // pulled the companion away is not picked up again, so the companion does not
-            // walk out, drop the fight at the leash, and turn straight back to the same mob.
-            if (state.mode == FollowMode.WAIT && state.waitSpot != null
-                    && !withinLeash(living, state.waitSpot, plugin.waitThreatRadius())) {
-                continue;
-            }
-            // A companion does not chase a mob that has run out of its owner's reach. The
-            // same rule is applied here as to the fight it is already in, so the companion
-            // cannot ignore a mob that is right next to it and then chase it again: the mob
-            // is out of reach either way, and picking it up would start the chase again
-            // only to drop it once more.
-            if (state.mode != FollowMode.WAIT
-                    && isOutOfReach(living.getLocation().distanceSquared(owner.getLocation()),
-                    ownerReach)) {
                 continue;
             }
             double distance = living.getLocation().distanceSquared(npcLocation);
@@ -1700,15 +1947,36 @@ public final class CompanionManager {
     }
 
     /**
-     * Whether the mob is still inside the ground a waiting companion holds.
+     * Whether the companion watches the circle around the owner for threats.
      *
-     * <p>The leash is measured from the spot the companion was told to wait at, not from the
-     * companion itself. Measured from the companion, a mob that has already pulled it out of
-     * its post would still count as a target, and the companion would walk out again, drop
-     * the fight at the leash, and turn straight back to the same mob.</p>
+     * <p>True for the modes that stay with the owner: a distant attacker coming for the owner
+     * is their fight. False in WAIT: a companion holding a post is not pulled out of its own
+     * ground by a fight that happens somewhere else entirely.</p>
      */
-    private static boolean withinLeash(LivingEntity mob, Location waitSpot, double leash) {
-        return mob.getLocation().distanceSquared(waitSpot) <= leash * leash;
+    static boolean ownerThreatSearchEnabled(FollowMode mode) {
+        return mode != FollowMode.WAIT;
+    }
+
+    /** Whether auto-spawn should place the companion on a saved wait post instead of formation. */
+    static boolean shouldSpawnAtWaitPost(FollowMode mode, Location spot) {
+        return mode == FollowMode.WAIT && spot != null && spot.getWorld() != null;
+    }
+
+    /**
+     * Whether a mob is inside the ground a waiting companion holds.
+     *
+     * <p>The ground is measured from the spot the companion was told to wait at, not from the
+     * companion itself: the companion wanders a few blocks around that spot, and a mob that
+     * walks into the ground it holds is worth fighting from wherever the companion happens
+     * to be standing.</p>
+     *
+     * @param mobLocation where the mob is
+     * @param waitSpot   the spot the companion was told to wait at
+     * @param leash      the radius of the ground it holds
+     * @return true when the mob is on that ground
+     */
+    static boolean withinWaitTerritory(Location mobLocation, Location waitSpot, double leash) {
+        return waitSpot != null && mobLocation.distanceSquared(waitSpot) <= leash * leash;
     }
 
     /**
@@ -1851,115 +2119,50 @@ public final class CompanionManager {
     }
 
     /**
-     * Picks the mob this companion fights, keeping the current target while it is still valid.
+     * Picks the mob this companion fights, holding the current target until the fight is over.
      *
-     * <p>The current target is kept for a short grace period so the companion does not drop a mob
-     * that stepped one block out of reach, and re-picks when the mob dies or the grace expires.</p>
+     * <p>A target is dropped only when the fight itself ends: the mob dies, leaves the world,
+     * or the companion proves over {@link #CHASE_ABANDON_TICKS} that it cannot be reached at
+     * all. Distance never ends a chase — the companion follows a fleeing mob until it is dead,
+     * and the emergency teleport brings it home afterwards.</p>
      */
-    private LivingEntity resolveAttackTarget(Mannequin npc, Player owner, FollowState state,
-                                             long currentTick, double heldReach) {
+    private LivingEntity resolveAttackTarget(Mannequin npc, Player owner, FollowState state) {
         if (state.attackTarget != null) {
             Entity existing = Bukkit.getEntity(state.attackTarget);
-            // The grace check is skipped on the very first pick, because subtracting the
-            // never-set sentinel from the tick would overflow to a negative number.
-            boolean withinGrace = state.attackTargetTick == Long.MIN_VALUE
-                    || currentTick - state.attackTargetTick <= ATTACK_TARGET_GRACE_TICKS;
-            if (withinGrace && existing instanceof LivingEntity living
-                    && living.isValid() && !living.isDead()) {
-                // A mob that has drawn the companion away from its owner is let go. The
-                // companion is not a stray that follows a mob across the map: it belongs to
-                // the owner, and a chase that leads out of reach leaves it stuck far away,
-                // unable to get back. A waiting companion is on its own leash instead.
-                //
-                // The check is not held back by the grace period. The grace period is there
-                // to stop the companion from changing its mind every tick; a mob that has
-                // run out of reach is not a change of mind but the end of the chase. Waiting
-                // three seconds for it meant the companion kept walking after the mob and
-                // only then let it go.
-                if (state.mode != FollowMode.WAIT && isOutOfReach(owner, living)) {
-                    state.attackTarget = null;
-                    state.attackTargetTick = Long.MIN_VALUE;
-                    // The mob is left alone for a moment, so the companion does not pick the
-                    // very same fight up again on the next tick. Without this the companion
-                    // ignored the mob and chased it again, over and over, while the mob stood
-                    // right there in front of it.
-                    state.releasedTargetsUntil.put(living.getUniqueId(),
-                            currentTick + LEASH_BREAK_TICKS);
-                    return null;
-                }
-                // A mob that is running away is still the one the companion is fighting. It
-                // is held on to as long as it stays within reach of the companion, which is
-                // further than the circle a new mob is spotted in. Looking for a new mob
-                // instead would have the companion turn back the moment the runner stepped
-                // out of the search radius, and pick the same runner up again as soon as it
-                // came back — a chase that stopped and started over and over.
-                double heldDistance = living.getLocation().distanceSquared(npc.getLocation());
-                if (stillHeld(heldDistance, heldReach)) {
-                    return living;
-                }
-                // The runner has got too far away to be worth chasing any more.
-                state.attackTarget = null;
-                state.attackTargetTick = Long.MIN_VALUE;
-                state.releasedTargetsUntil.put(living.getUniqueId(),
-                        currentTick + LEASH_BREAK_TICKS);
-                return null;
+            if (existing instanceof LivingEntity living && living.isValid() && !living.isDead()) {
+                return living;
             }
         }
         LivingEntity found = findAttackTarget(npc, owner, state);
         if (found == null) {
             state.attackTarget = null;
-            state.attackTargetTick = Long.MIN_VALUE;
             return null;
         }
         state.attackTarget = found.getUniqueId();
-        state.attackTargetTick = currentTick;
+        // A fresh fight starts a fresh abandon clock, so a companion that stood without a
+        // route for a while before the mob arrived does not give up on its first failed plan.
+        state.noPathSinceTick = Long.MIN_VALUE;
         return found;
     }
 
     /**
-     * Whether the mob has drawn the companion too far away from its owner.
+     * Whether a chase has failed to find a route long enough to be given up.
      *
-     * <p>The distance is measured from the owner, not from the companion. A companion that
-     * chases a mob which keeps running walks away from the owner with it, and once it is
-     * out of reach there is no route back — the companion is stuck wherever the chase ended.
-     * Letting the mob go at that point and walking back to the owner is what keeps the
-     * companion where it belongs.</p>
+     * <p>Ten seconds ({@link #CHASE_ABANDON_TICKS}) of failed routes is the proof that the mob
+     * cannot be reached: the target is released, the companion walks home (or back to its post),
+     * and the mob is left alone for the same while before it may be picked up again. This is
+     * the one thing that ends a chase besides the mob actually dying.</p>
+     *
+     * @param currentTick      the current server tick
+     * @param noPathSinceTick  the tick the companion last failed to find a route, or
+     *                         {@link Long#MIN_VALUE} when it has a route
+     * @return true when the chase should be abandoned
      */
-    private boolean isOutOfReach(Player owner, LivingEntity mob) {
-        return isOutOfReach(mob.getLocation().distanceSquared(owner.getLocation()),
-                plugin.attackSearchRadius() * 2.0);
+    static boolean chaseAbandoned(long currentTick, long noPathSinceTick) {
+        return noPathSinceTick != Long.MIN_VALUE
+                && currentTick - noPathSinceTick >= CHASE_ABANDON_TICKS;
     }
 
-    /**
-     * Whether the squared distance between a mob and the owner is beyond the reach a
-     * companion is willing to follow.
-     *
-     * <p>Kept separate from the world so the rule can be checked on its own.</p>
-     *
-     * @param squaredDistance the squared distance between the mob and the owner
-     * @param reach           the squared distance the companion is willing to follow
-     * @return true when the mob is too far away to be chased
-     */
-    static boolean isOutOfReach(double squaredDistance, double reach) {
-        return squaredDistance > reach * reach;
-    }
-
-    /**
-     * Whether a mob the companion is already fighting is still worth holding on to.
-     *
-     * <p>A mob that is running away is still the one the companion is fighting, so it is
-     * followed as long as it stays within reach of the companion — further out than the
-     * circle a new mob is spotted in. Looking for a new mob instead would have the
-     * companion turn back the moment the runner stepped out of the search radius, and pick
-     * the same runner up again as soon as it came back.</p>
-     *
-     * @param squaredDistance the squared distance between the mob and the companion
-     * @param heldReach       the squared distance the companion will follow the mob to
-     * @return true when the mob is still being fought
-     */
-    static boolean stillHeld(double squaredDistance, double heldReach) {
-        return squaredDistance <= heldReach * heldReach;
-    }
     /**
      * The spot the companion walks to in order to strike its target: within melee reach, on the
      * side the companion is already approaching from.
@@ -2415,6 +2618,7 @@ public final class CompanionManager {
      */
     private void startFollowing(CompanionKey key, Player owner, Mannequin npc, float initialFormationYaw) {
         FollowState state = new FollowState();
+        state.ownerId = key.ownerId();
         state.archetype = key.archetype();
         state.formationYaw = initialFormationYaw;
         state.lastOwnerPosition = owner.getLocation().clone();
@@ -2492,45 +2696,14 @@ public final class CompanionManager {
             // instead of holding its side, and looks at what it is fighting.
             //
             // Defending is automatic: there is no toggle any more. A companion always reacts to
-            // a hostile mob that is coming for its owner or for the companion itself. The search
-            // is centred on the companion, so a waiting companion defends the ground it was told
-            // to hold and never leaves to chase the owner across the map.
-            // A mob the companion is already fighting is held on to as long as it stays
-            // within reach of the companion. That reach is wider than the circle a new mob
-            // is spotted in, so a mob that runs is followed instead of being dropped and
-            // picked up again. A companion that throws keeps it for as long as the throw
-            // could still reach.
-            CompanionWeapons.Weapon heldWeapon = CompanionWeapons.of(state.archetype);
-            double heldReach = heldWeapon != null && heldWeapon.isRanged()
-                    ? RANGED_THROW_RANGE
-                    : plugin.attackSearchRadius() * 2.0;
-            LivingEntity attackTarget = resolveAttackTarget(npc, owner, state, currentTick,
-                    heldReach);
+            // a hostile mob that is coming for its owner or for the companion itself. Threats
+            // around the owner are found in a circle around the owner, so a distant attacker —
+            // a skeleton shooting from outside the companion's own circle — is answered too.
+            // Once a fight starts it is held until the mob dies: a chase is never ended by
+            // distance alone, and the emergency teleport brings the companion home afterwards.
+            LivingEntity attackTarget = resolveAttackTarget(npc, owner, state);
             if (attackTarget != null) {
                 targetSpot = combatSpot(npc, state, attackTarget, currentTick);
-            }
-            // A waiting companion is on a leash: it fights what comes inside the ground it holds,
-            // but it does not follow a mob out of that ground. Once the mob pulls it too far from
-            // its spot, the companion drops the fight and walks back to where it was told to wait.
-            //
-            // The fight is dropped when the companion itself has been pulled out of its post,
-            // not when the mob has. A mob that stands just outside the leash is still worth
-            // fighting from the edge of the post; a mob that has dragged the companion across
-            // the map is not. Dropping it there is what made the companion walk out, let the
-            // mob go, walk back, and be picked up by the same mob again.
-            if (attackTarget != null && waitMode && state.waitSpot != null) {
-                double leash = plugin.waitThreatRadius();
-                if (npcLocation.distanceSquared(state.waitSpot) > leash * leash) {
-                    // The mob is let go for a moment, so the companion can walk back to its post
-                    // without being pulled out again by the same fight. Only that mob is
-                    // paused: another hostile that comes close is still fought.
-                    state.releasedTargetsUntil.put(attackTarget.getUniqueId(),
-                            currentTick + LEASH_BREAK_TICKS);
-                    attackTarget = null;
-                    state.attackTarget = null;
-                    state.attackTargetTick = Long.MIN_VALUE;
-                    targetSpot = waitSpot(npc, state, currentTick);
-                }
             }
             // The weapon is only drawn while there is something to fight, and put away again once
             // the fight is over.
@@ -2578,8 +2751,10 @@ public final class CompanionManager {
             // straight-line distance stays small. A companion that is still rising — falling is
             // over and it swims upward — is left alone, so a swim towards the owner is not
             // interrupted. A waiting companion is not rescued either: it was told to stay where
-            // it is, so being far from the owner is exactly what was asked for.
-            if (!waitMode
+            // it is, so being far from the owner is exactly what was asked for. A companion that
+            // is out on a fight is not rescued either: the chase is the point, and the fight
+            // ends when the mob dies or the chase is abandoned for good.
+            if (!waitMode && attackTarget == null
                     && ownerLocation.getY() - npcLocation.getY() >= EMERGENCY_FALL_DISTANCE
                     && npc.getVelocity().getY() <= 0.01) {
                 if (rescueTeleport(npc, owner, ownerLocation, state)) {
@@ -2594,13 +2769,18 @@ public final class CompanionManager {
             // FOLLOW catches up to the companion's own formation side, CLOSE lands in the
             // owner's reachable room. Both use their own configured distance. A waiting
             // companion never needs catching up, so it is left alone entirely.
-            if (!waitMode && distance > emergencyTeleportDistance(state.mode)) {
+            //
+            // A companion that is out on a fight is not pulled back mid-chase: the chase is the
+            // point, and yanking it home every time it steps past the radius would stop it from
+            // ever finishing the mob. The catch-up applies again the moment the fight is over.
+            if (catchUpTeleportAllowed(state.mode, attackTarget != null, distance,
+                    emergencyTeleportDistance(state.mode))) {
                 if (rescueTeleport(npc, owner, ownerLocation, state)) {
                     return;
                 }
-                // No landing spot was free. The companion goes on with the fight it was in
-                // rather than standing still: it is out of the owner's reach either way, and
-                // a companion that keeps fighting is far better than one that is stuck.
+                // No landing spot was free. The companion goes on with what it was doing rather
+                // than standing still: it is out of the owner's reach either way, and a
+                // companion that keeps moving is far better than one that is stuck.
             }
 
             // While fighting, two independent distances apply. Resting is decided by the closer
@@ -2702,14 +2882,28 @@ public final class CompanionManager {
                 if (state.noPathSinceTick == Long.MIN_VALUE) {
                     state.noPathSinceTick = currentTick;
                 }
-                if (!waitMode && !npc.isInWater()
+                // A fight is held until the mob dies, so the only other way it ends is the
+                // companion proving it cannot reach the mob at all. Ten seconds of failed routes
+                // is that proof: the target is released, the companion walks home (or back to
+                // its post), and the mob is left alone for the same while before it may be
+                // picked up again. This is what stops an unreachable mob from being chased for
+                // ever — the one thing that ends a chase besides the mob actually dying.
+                if (attackTarget != null && chaseAbandoned(currentTick, state.noPathSinceTick)) {
+                    state.releasedTargetsUntil.put(attackTarget.getUniqueId(),
+                            currentTick + CHASE_ABANDON_TICKS);
+                    state.attackTarget = null;
+                    attackTarget = null;
+                }
+                // The rescue home is for a companion with nothing left to fight. A rescue that
+                // fired mid-chase would end the fight for it — which is what the release above
+                // is for instead — so it waits until the chase is over.
+                if (!waitMode && attackTarget == null && !npc.isInWater()
                         && currentTick - state.noPathSinceTick >= NO_PATH_RESCUE_TICKS) {
                     if (rescueTeleport(npc, owner, ownerLocation, state)) {
                         return;
                     }
-                    // No landing spot was free for the rescue. The companion is out of reach
-                    // anyway, so it goes on with the fight it was in instead of standing still
-                    // for good.
+                    // No landing spot was free for the rescue. The companion carries on with
+                    // what it was doing instead of standing still for good.
                 }
                 // There is no route to the spot the companion was aiming for. That spot is
                 // usually the mob it is chasing, and the mob may have drawn it somewhere it
@@ -4086,6 +4280,25 @@ public final class CompanionManager {
     }
 
     /**
+     * Whether the routine catch-up teleport may pull the companion back to its owner.
+     *
+     * <p>A waiting companion is never caught up: it was told to stay where it is. A companion
+     * that is out on a fight is not pulled back either — the chase is the point, and yanking
+     * it home every time it steps past the radius would stop it from ever finishing the mob.
+     * The catch-up applies again the moment the fight is over.</p>
+     *
+     * @param mode            the companion's standing mode
+     * @param fighting        whether the companion currently holds an attack target
+     * @param distanceToOwner the straight-line distance to the owner, in blocks
+     * @param teleportDistance the configured catch-up distance for the mode
+     * @return true when the companion may be teleported back to its owner
+     */
+    static boolean catchUpTeleportAllowed(FollowMode mode, boolean fighting,
+                                          double distanceToOwner, int teleportDistance) {
+        return mode != FollowMode.WAIT && !fighting && distanceToOwner > teleportDistance;
+    }
+
+    /**
      * Picks where a waiting companion strolls next.
      *
      * <p>The companion keeps the spot it was told to wait at as its anchor and free-roams around
@@ -4101,6 +4314,9 @@ public final class CompanionManager {
         if (state.waitSpot == null) {
             // The first time the mode is used, the current position becomes the anchor.
             state.waitSpot = npcLocation.clone();
+            if (state.ownerId != null) {
+                recordWaitSpot(new CompanionKey(state.ownerId, state.archetype), state.waitSpot);
+            }
         }
         // A companion that was pulled away from its spot — to fight a mob — heads straight back
         // there first. Walking back is not a stroll: the stroll only resumes once the companion
@@ -4308,7 +4524,6 @@ public final class CompanionManager {
         // must not keep aiming at a mob that is now far away. Leaving the target in place
         // made the companion walk straight back out to it, and the rescue repeated for ever.
         state.attackTarget = null;
-        state.attackTargetTick = Long.MIN_VALUE;
         return true;
     }
 
@@ -4524,6 +4739,7 @@ public final class CompanionManager {
 
     /** Removes every companion owned by the given player, across all archetypes. */
     public void despawn(Player owner) {
+        persistWaitSpotsForOwner(owner.getUniqueId());
         for (String archetype : ARCHETYPES) {
             despawn(owner, archetype);
         }

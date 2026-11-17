@@ -14,6 +14,15 @@ eris-owner: "3153123c-9e35-3753-9fde-f1f856121df2"
 eris-testers:
   - "515402e5-832e-311e-b35f-3f3f0eca8f4f"
 
+# When true, every companion an owner may use respawns shortly after that owner joins the server.
+# WAIT companions appear on the last post they were told to hold; others appear around the owner.
+auto-spawn-on-join: true
+
+# When true, companions that appear because their owner joined stay quiet: no voice, no line
+# in chat. Nobody called them, so there is nothing for them to answer. Set this to false if
+# you want to hear them greet the owner when he comes back.
+silent-auto-spawn: true
+
 # Optional hosted skin URL. Leave blank to use the bundled character skin in the companion resource pack.
 yui:
   skin-url: ""
@@ -60,15 +69,26 @@ idle-look-mob-radius: 12
 # comfort distance it almost never ran outside of standing on top of the owner.
 idle-look-standstill-distance: 6
 
-# How far a hostile mob may be from a companion for the companion to defend itself and its owner.
-# The search is centred on the companion, so a companion that was told to wait defends the
-# ground it is holding and never leaves to chase the owner across the map.
+# How far a hostile mob may be from a companion for the companion to notice it nearby.
+# The search runs around the companion AND around the owner (owner-threat-radius below),
+# so a mob attacking the owner from a distance is still answered.
 attack-search-radius: 8.0
 
-# How far a waiting companion reacts to hostile mobs around the spot it was told to wait at.
-# A mob inside this radius is spotted and fought; one further out is ignored, so the companion
-# holds its post instead of chasing. This is separate from the 5-block idle wander radius:
-# raising it widens the threats it reacts to, not the area it strolls around.
+# How far from the owner a threatening mob may be for the companion to come and kill it.
+# This is what answers a distant attacker: a skeleton shooting arrows from outside the
+# companion's own circle is still coming for the owner, and the companion walks or
+# teleports over to finish it. Raise it if distant attackers are still being ignored.
+# This circle is NOT watched by a companion in WAIT mode: it holds a post and does not
+# leave the ground it was told to hold for a fight happening somewhere else.
+owner-threat-radius: 24.0
+
+# Radius around the spot a waiting companion was told to hold: hostiles inside it are
+# fought even before they pick a target. This is the only ground a waiting companion
+# watches — it does not chase a mob that is attacking the owner out in the world. A fight
+# started on its own ground is finished wherever the mob runs (there is no leash that
+# ends it), and the companion walks back to its spot afterwards. This is separate from
+# the 5-block idle wander radius: raising it widens the threats it reacts to, not the
+# area it strolls around.
 wait-threat-radius: 12.0
 
 # Damage per melee swing in defensive attack mode.

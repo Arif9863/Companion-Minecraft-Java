@@ -215,8 +215,14 @@ public final class PlannerRulesTest {
 
         private final Map<String, Block> blocks = new HashMap<>();
         private final World proxy;
+        private final String name;
 
         TestWorld() {
+            this("test");
+        }
+
+        TestWorld(String name) {
+            this.name = name;
             proxy = (World) Proxy.newProxyInstance(
                     TestWorld.class.getClassLoader(),
                     new Class<?>[]{World.class},
@@ -244,7 +250,7 @@ public final class PlannerRulesTest {
                             case "isChunkLoaded":
                                 return true;
                             case "getName":
-                                return "test";
+                                return name;
                             default:
                                 return defaultValue(method.getReturnType());
                         }

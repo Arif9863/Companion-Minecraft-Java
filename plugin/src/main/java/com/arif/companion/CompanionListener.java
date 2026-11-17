@@ -17,6 +17,7 @@ import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.Bukkit;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.EquipmentSlot;
@@ -69,6 +70,9 @@ public final class CompanionListener implements Listener {
         if (removed) {
             player.getInventory().setContents(contents);
             player.sendMessage(Component.text("Item panel lama dihapus.", NamedTextColor.LIGHT_PURPLE));
+        }
+        if (plugin.autoSpawnOnJoin()) {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> plugin.getManager().autoSpawnAll(player), 20L);
         }
     }
 

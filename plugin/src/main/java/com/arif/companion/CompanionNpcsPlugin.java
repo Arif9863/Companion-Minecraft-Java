@@ -41,11 +41,14 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     private int idleLookStandstillDistance;
     private int packHttpPort;
     private double attackSearchRadius;
+    private double ownerThreatRadius;
     private double waitThreatRadius;
     private double attackDamage;
     private long attackCooldownTicks;
     private double yuiSkeletonMarkRadius;
     private double sandroneCreeperMarkRadius;
+    private boolean autoSpawnOnJoin;
+    private boolean silentAutoSpawn;
     /**
      * UUIDs allowed to use Yui and Sandrone.
      *
@@ -439,6 +442,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         packHttpPort = config.getInt("pack-http-port", 8765);
         // How far a hostile mob may be from a companion before it defends itself and its owner.
         attackSearchRadius = Math.max(2.0, Math.min(16.0, config.getDouble("attack-search-radius", 8.0)));
+        // How far from the owner a threatening mob may be for the companion to come and kill
+        // it. This is what answers a distant attacker: a skeleton firing arrows from outside
+        // the companion's own circle is still coming for the owner, and the companion walks
+        // or teleports over to finish it.
+        ownerThreatRadius = Math.max(8.0, Math.min(64.0, config.getDouble("owner-threat-radius", 24.0)));
         // How far a waiting companion reacts to hostile mobs around the spot it was told to
         // wait at. Detection and fighting range in one: a mob inside it is fought, one further
         // out is left alone, and the companion holds its post.
@@ -450,6 +458,25 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
         // Companion-specific defensive markers (10-24 blocks, default 16).
         yuiSkeletonMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("yui-skeleton-mark-radius", 16.0)));
         sandroneCreeperMarkRadius = Math.max(10.0, Math.min(24.0, config.getDouble("sandrone-creeper-mark-radius", 16.0)));
+        autoSpawnOnJoin = config.getBoolean("auto-spawn-on-join", true);
+        silentAutoSpawn = config.getBoolean("silent-auto-spawn", true);
+    }
+
+    /**
+     * Whether every companion an owner is entitled to should respawn shortly after they join.
+     */
+    boolean autoSpawnOnJoin() {
+        return autoSpawnOnJoin;
+    }
+
+    /**
+     * Whether companions that appear because their owner joined stay quiet.
+     *
+     * <p>Nobody called them, so there is nothing for them to answer. Without this the owner
+     * comes back to a server that greets him with every companion's voice at once.</p>
+     */
+    boolean silentAutoSpawn() {
+        return silentAutoSpawn;
     }
 
     /**
@@ -542,6 +569,11 @@ public final class CompanionNpcsPlugin extends JavaPlugin {
     /** How far an owner-threatening hostile may be for a companion to defend against. */
     double attackSearchRadius() {
         return attackSearchRadius;
+    }
+
+    /** How far from the owner a threatening mob may be for a companion to come and kill it. */
+    double ownerThreatRadius() {
+        return ownerThreatRadius;
     }
 
     /** How far a waiting companion reacts to hostile mobs around the spot it was told to wait at. */

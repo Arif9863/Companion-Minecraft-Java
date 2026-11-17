@@ -206,41 +206,41 @@ hostile mob that is coming for its owner or for the companion itself, in every m
   `wait-threat-radius` blocks of the spot it was told to wait at, even if that mob has not
   chosen a target yet. The threat requirement still stands on its own — the two are combined,
   not swapped: a mob that comes for the party counts in every mode, and the territorial rule
-  adds the ones that merely intrude. A mob further out is left alone rather than chased.
+  adds the ones that merely intrude.
 - **Neutral hostiles are left alone.** An Enderman counts as a threat only once it actually
   comes for the owner or a companion — a waiting companion does not pick a fight with one that
   merely strolls past, since it only strikes when provoked and can turn on the owner instead.
-- **The search is centred on the companion**, never on the owner. This is what makes a waiting
-  companion stay where it was told to wait instead of running off to rescue the owner across the
-  map — and then standing where the last mob died.
-- **A waiting companion fights on its own ground.** It engages a hostile that comes within
-  `wait-threat-radius` blocks of the spot it was told to wait at. It is on a leash there: if the
-  mob drags it further than that radius from its spot, it drops the fight and walks back. Once the
-  fight is over it returns to its spot and resumes its wander. Raising this radius widens the
-  threats it reacts to; it does not change the 5-block idle wander.
-- **The leash is measured from the post, not from the companion.** A mob that has already pulled
-  the companion out of its post is not picked up again. Measured from the companion instead, the
-  same mob would pull it out again the moment it got back, and the companion would walk out and
-  back for ever instead of holding its ground. After letting a mob go, that one mob is left
-  alone for two seconds so the companion can walk back to its post first — another mob that
-  comes close in the meantime is still fought.
-- **A companion does not chase a mob out of reach.** The mob has to stay within twice the attack
-  search radius of the *owner*. A companion that chases a mob which keeps running walks away from
-  its owner with it, and once it is out of reach there is no route back — it would be stuck
-  wherever the chase ended. Letting the mob go and walking back to the owner is what keeps the
-  companion where it belongs. The same rule applies to picking a mob up in the first place, so
-  the companion cannot ignore a mob standing right in front of it and chase it again: the mob is
-  out of reach either way, and taking it on would only start the chase to drop it once more.
-- **A mob that runs away is still fought.** A new mob is spotted within the attack search
-  radius, but the one the companion is already fighting is followed further than that — twice
-  the radius, or the full throw range for a companion that throws. Without this the companion
-  turned back the moment the runner stepped out of the search radius and picked the same runner
-  up again as soon as it came back, so the chase stopped and started over and over. A mob that
-  has run past that distance is let go.
-- **A companion that cannot reach its target walks back instead of standing still.** When there
-  is no route to the mob, the companion looks for a route to its owner and takes that. A route
-  home exists far more often than a route to a fleeing mob, and it puts the companion back in
-  reach rather than leaving it wedged where the fight left it.
+- **Two circles are watched: one around the companion and one around the owner.** Threats near
+  the companion are found in its own search radius (`attack-search-radius`), and threats near
+  the owner are found in a wider circle around the owner (`owner-threat-radius`). The second
+  circle is what answers a distant attacker: a skeleton shooting arrows from outside the
+  companion's own circle is still coming for the owner, and the companion walks or teleports
+  over to kill it. Only mobs actually targeting the owner or a companion are taken from either
+  circle, so a crowd of mobs merely walking past is left alone.
+- **A waiting companion watches its own ground only.** It does not watch the circle around the
+  owner at all. It was told to hold a post, so its fight is the one happening on its own
+  ground: a mob attacking the owner out on the road is not the post's fight, and a companion
+  left at home would otherwise walk out of the house to chase it. It still defends itself
+  against anything that comes for it, and it still kills a mob that enters the ground it
+  holds.
+- **A fight is held until the mob dies.** Distance never ends a chase: a mob that runs is
+  followed for as long as it takes to kill it, no matter how far it goes. The one thing that
+  ends a chase besides the mob dying is the companion proving it cannot reach the mob at all —
+  after ten seconds without a route the target is released, the companion walks home (or back
+  to its post), and the mob is left alone for the same while before it may be picked up again.
+- **The companion is never pulled back mid-chase.** The routine catch-up teleport does not fire
+  while a fight is on: yanking the companion home every time it steps past the radius would
+  stop it from ever finishing the mob. Once the fight is over the usual catch-up applies again,
+  so a companion that killed something far away walks or teleports back to its owner. A waiting
+  companion is never caught up at all — it walks back to its post on its own.
+- **A waiting companion walks back after the kill.** It may leave its post to finish a fight —
+  including one that started far from the post — and returns to where it was told to wait once
+  the mob is dead. Raising `wait-threat-radius` widens the threats it reacts to before the
+  fight starts; it does not change the 5-block idle wander.
+- **A companion that cannot reach its target gives up instead of standing still.** When there
+  is no route to the mob for ten seconds the fight is abandoned (see above), and the companion
+  walks back towards its owner — or its post, in WAIT — rather than being wedged wherever the
+  chase left it.
 - **A companion is never left standing still by a failed rescue.** If it has fallen too far
   behind and the landing spot is not free, it carries on with the fight it was in rather than
   giving up where it stands.
@@ -269,7 +269,7 @@ A companion has exactly one standing behaviour at a time. **The mode stays in fo
 |---|---|---|---|
 | Position | Formation: a line on each side — Yui, Furina, Columbina on your left; Sandrone, Ei, Escoffier on your right | As close as the geometry allows, no formation | Stays where it was told to wait |
 | Standing distance | `comfort-distance` (3.0 blocks) | `close-distance` (1.8 blocks) | Free-roams up to 5 blocks around its own spot |
-| Fights | Hostile mobs coming for you or a companion | Same | Hostile mobs coming inside `wait-threat-radius` of its own spot — it stays on its ground |
+| Fights | Hostile mobs coming for you or a companion | Same | Hostile mobs on the ground it holds — it does not leave the post for a fight happening out in the world |
 | Emergency teleport target | Its own formation side | A spot in the room you can walk to | None — it is never pulled back to you |
 
 - FOLLOW is the default: a freshly spawned companion starts in this mode.
@@ -278,7 +278,34 @@ A companion has exactly one standing behaviour at a time. **The mode stays in fo
   or resting — rather than marching to a fixed point and standing there. It keeps watching you
   from where it stands, and it is never rescued by teleport: being far from you is exactly what
   you asked for.
-- The chosen mode is saved per player in `plugins/CompanionNPCs/modes.yml` and restored when the companion is respawned or the server restarts.
+- The chosen mode is saved per player in `plugins/CompanionNPCs/modes.yml` and restored when the companion is respawned or the server restarts. The wait anchor is saved in the same file, under `wait-spots`, so it survives a logout, a reconnect and a restart of the server.
+
+### Coming back to the post
+
+A companion that was left on a post and comes back to it does not simply reappear at the stored
+coordinates. The anchor is worked out again:
+
+- The same place is used when it still fits. A companion left standing on a slab, a stair or a
+  carpet is put back **on** that block, at the height its shape actually reaches.
+- When the floor under the anchor is gone, the companion comes back down to what is left of it —
+  four blocks down at most — rather than being lifted. It never ends up on the roof of the house
+  it was left in, which is what the old "highest block of the column" fallback did.
+- When nothing near the anchor fits any more, the companion appears around the owner instead of
+  inside a wall, and holds that new place from then on.
+
+### Companions that come back on their own
+
+`auto-spawn-on-join` (default `true`) brings a companion back when its owner logs in. Every
+companion the owner may use is spawned shortly after the join — one second, so the world is
+ready. The mode is restored with it: a FOLLOW or CLOSE companion appears in the formation around
+the owner, a WAIT companion appears on the post it was left at.
+
+`silent-auto-spawn` (default `true`) keeps those companions quiet. Nobody called them, so there
+is nothing for them to answer: no voice, no line in chat. Set it to `false` to hear them greet
+the owner when he comes back.
+
+A companion left in a different world stays in that world; the chunk and the world have to be
+available when the owner joins.
 
 ### Changing the mode without a command
 
@@ -308,8 +335,8 @@ Mannequins are not `Mob` and have no vanilla pathfinder, so the plugin computes 
 - **Climbing onto a ledge.** A far side that sits one block higher is jumped onto rather than merely jumped at. The companion aims at the middle of that block and matches its speed to the distance, so it arrives while the jump is still high enough to land on top — arriving too early would sail over the ledge, and too late would drop back into the gap. A single short hop covers the last fraction of a block.
 - **Carpets are walked over, not jumped over.** A carpet is a sixteenth of a block tall, so the route's waypoint sits on its surface rather than a block above it, and the companion does not jump along on every carpet it crosses. A carpet also does not make the ground solid: a carpet laid over a hole is still a hole.
 - **Doors are walked through, not climbed over.** A door fills its own block, but the companion walks through it with its feet on the floor, so the waypoint for a doorway sits at the floor rather than on top of the door. Measuring the top of the door put the waypoint a block too high, and the companion took that as a step to climb: it hopped up and down in front of every door it opened before squeezing through.
-- **Never into the void.** When the companion has no route for 5 seconds, or is more than 8 blocks below you while standing on ground, it is rescued to its mode's safe landing spot.
-- **Emergency teleports are distance-based** (`teleport-distance`, `close-teleport-distance`, both 24 blocks by default). A blocked route alone never causes a teleport.
+- **Never into the void.** When the companion has no route for 5 seconds, or is more than 8 blocks below you while standing on ground, it is rescued to its mode's safe landing spot. A companion that is out on a fight is rescued only after the chase is abandoned (10 seconds without a route) — a rescue that fired mid-chase would end the fight for it.
+- **Emergency teleports are distance-based** (`teleport-distance`, `close-teleport-distance`, both 24 blocks by default) and never fire while a fight is on: a companion chasing a mob is left to finish it, then caught up afterwards. A blocked route alone never causes a teleport.
 - **Doors are found on the route, not by proximity.** A companion works a door only when the door is on the route it is actually walking and it has arrived at it. A companion waiting in a house does not open the door beside it, and a door around the corner is left alone until the companion is really there. The way a villager finds its door in vanilla, and it is what stops a door being opened that nobody then walks through.
 - **Wooden doors, copper doors and fence gates are the only things operated.** An iron door, a trapdoor, a barrel or any other openable block is left exactly as it is, so the decorations in a house stay as they were put there.
 - **Doors and fence gates are closed again after they are walked through.** The door the companion is standing in stays open; a door further back is shut once it is no longer on the route and no other companion is still heading for it. A door somebody else left open is shut the same way, so a house the owner forgot to close does not stand open all night.
@@ -374,8 +401,9 @@ never overwritten. `/companionnpc reload` re-reads the file without restarting t
 | `close-teleport-distance` | 24 | Emergency teleport radius in CLOSE mode (16–32) |
 | `idle-look-mob-radius` | 12 | How far an idle companion glances at a nearby mob (4–24) |
 | `idle-look-standstill-distance` | 6 | How far a still companion may glance at mobs (2–12) |
-| `attack-search-radius` | 8.0 | How far a hostile mob may be from a companion for it to defend (2–16) |
-| `wait-threat-radius` | 12.0 | How far a waiting companion reacts to hostile mobs around its spot (4–48) |
+| `attack-search-radius` | 8.0 | How far a hostile mob may be from a companion for it to notice nearby (2–16) |
+| `owner-threat-radius` | 24.0 | How far from the owner a threatening mob may be for the companion to come and kill it (8–64) |
+| `wait-threat-radius` | 12.0 | How far a waiting companion reacts to hostile mobs around its spot before a fight starts (4–48) |
 | `attack-damage` | 5.0 | Damage per melee swing (1–40) |
 | `attack-cooldown-ticks` | 16 | Ticks between two swings, 20 = one second (4–40) |
 | `yui-skeleton-mark-radius` | 16.0 | How far Yui marks skeletons around itself (10–24) |
