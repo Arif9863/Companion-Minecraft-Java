@@ -47,6 +47,19 @@ public final class ChaseRulesTest {
                 CompanionManager.chaseAbandoned(now, now - 999L));
 
         System.out.println();
+        System.out.println("=== a mob the companion cannot hurt is let go ===");
+        check("a swing that lands resets the unreachable clock", false,
+                CompanionManager.targetUnreachable(now, Long.MIN_VALUE));
+        check("nine seconds without hurting the mob keeps the fight", false,
+                CompanionManager.targetUnreachable(now, now - 180L));
+        check("ten seconds without hurting the mob ends the fight", true,
+                CompanionManager.targetUnreachable(now, now - 200L));
+        check("four seconds without closing the gap keeps the chase", false,
+                CompanionManager.targetBlockedEngage(now, now - 80L));
+        check("five seconds without closing the gap ends the chase", true,
+                CompanionManager.targetBlockedEngage(now, now - 100L));
+
+        System.out.println();
         System.out.println("=== the catch-up teleport never fires mid-chase ===");
         // Yanking the companion home every time it steps past the radius would stop it from
         // ever finishing the mob, so the catch-up waits until the fight is over. A waiting

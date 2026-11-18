@@ -185,6 +185,40 @@ public final class CompanionManager {
      * the mob is left alone for the same while before it may be picked up again.</p>
      */
     private static final long CHASE_ABANDON_TICKS = 200L;
+    /**
+     * How long a companion may fail to reach its target before the fight is called off.
+     *
+     * <p>A route to the mob is not enough: the route only has to reach the spot the companion
+     * aims at, which for a mob behind a fence is the ground on the near side of it. The mob
+     * itself is still out of reach, so the companion walks up to the fence and stands there
+     * swinging at nothing. That is the case this clock covers: the companion has been trying
+     * to reach the mob for this long and never got within striking distance.</p>
+     *
+     * <p>10 seconds (200 ticks), the same span as {@link #CHASE_ABANDON_TICKS}. Long enough
+     * that a companion crossing a field towards a fleeing mob is never cut off mid-approach,
+     * short enough that a mob behind a fence is let go before the player gets tired of it.</p>
+     */
+    private static final long TARGET_UNREACHABLE_TICKS = 200L;
+    /**
+     * How long a released mob stays out of reach of the companion that let it go.
+     *
+     * <p>20 seconds (400 ticks): long enough for the companion to walk back to its owner and
+     * settle, so it does not walk straight back out to the same fence. The mob is picked up
+     * again afterwards if it is still a threat.</p>
+     */
+    private static final long TARGET_RELEASE_COOLDOWN_TICKS = 400L;
+    /**
+     * How long a companion may stay on a fight it cannot close before giving up.
+     *
+     * <p>Five seconds (100 ticks). Shorter than {@link #TARGET_UNREACHABLE_TICKS}, because this
+     * clock covers a companion that never gets close enough to try: a thrower staring at a mob
+     * through a fence, or a melee companion that walked as close as the route allows and is
+     * still one block short with a wall in between. The health-based clock never starts in those
+     * cases, so this one does.</p>
+     */
+    private static final long TARGET_BLOCKED_ENGAGE_TICKS = 100L;
+    /** How far the companion has to shrink the gap to count as making progress. */
+    private static final double ENGAGE_PROGRESS_DELTA = 0.2;
     private static final long FAILED_PLAN_RETRY_TICKS = 20L;
     private static final int PATH_RADIUS = 48;
     /**
@@ -550,6 +584,36 @@ public final class CompanionManager {
          * to the same fight; another mob can still be defended against.
          */
         private final Map<UUID, Long> releasedTargetsUntil = new HashMap<>();
+        /**
+         * Tick since which the companion has been unable to reach its current target.
+         *
+         * <p>Kept apart from {@link #noPathSinceTick}, which counts failed routes. A mob behind
+         * a fence still has a route — to the ground on the near side of it — so the route clock
+         * never runs. This clock counts the thing that actually matters: the companion not being
+         * able to get within striking distance of the mob.</p>
+         */
+        private long unreachableSinceTick = Long.MIN_VALUE;
+        /**
+         * The mob the unreachable clock belongs to, so a new target starts a fresh clock.
+         */
+        private UUID unreachableTarget;
+        /**
+         * The lowest health the current target has been seen at.
+         *
+         * <p>A drop in this value means a hit landed, so the companion can fight the mob after
+         * all. A mob that heals does not raise the baseline, so healing is not mistaken for
+         * progress.</p>
+         */
+        private double unreachableHealth;
+        /**
+         * The closest horizontal distance to the current target seen while the gap could not
+         * be closed. Used to tell a stall at a fence apart from a chase that is still closing.
+         */
+        private double lastEngageDistance = Double.MAX_VALUE;
+        /**
+         * Tick since which the companion has been stuck on a fight it cannot close.
+         */
+        private long blockedEngageSinceTick = Long.MIN_VALUE;
         /** Tick of the last swing, used to space the melee hits out. */
         private long lastSwingTick = Long.MIN_VALUE;
         /** Tick of the last ground footstep sound. */
@@ -1898,6 +1962,9 @@ public final class CompanionManager {
                 if (!isThreatToParty(living, owner, npc)) {
                     continue;
                 }
+                if (!isEngageable(npc, state, living)) {
+                    continue;
+                }
                 double distance = living.getLocation().distanceSquared(npcLocation);
                 if (distance < bestDistance) {
                     bestDistance = distance;
@@ -1935,6 +2002,9 @@ public final class CompanionManager {
                         detectRadius);
             }
             if (!threatToParty && !territorial) {
+                continue;
+            }
+            if (!isEngageable(npc, state, living)) {
                 continue;
             }
             double distance = living.getLocation().distanceSquared(npcLocation);
@@ -2142,6 +2212,11 @@ public final class CompanionManager {
         // A fresh fight starts a fresh abandon clock, so a companion that stood without a
         // route for a while before the mob arrived does not give up on its first failed plan.
         state.noPathSinceTick = Long.MIN_VALUE;
+        // The same goes for the "cannot hurt this mob" clock: a new mob starts a fresh one.
+        state.unreachableTarget = null;
+        state.unreachableSinceTick = Long.MIN_VALUE;
+        state.lastEngageDistance = Double.MAX_VALUE;
+        state.blockedEngageSinceTick = Long.MIN_VALUE;
         return found;
     }
 
@@ -2161,6 +2236,192 @@ public final class CompanionManager {
     static boolean chaseAbandoned(long currentTick, long noPathSinceTick) {
         return noPathSinceTick != Long.MIN_VALUE
                 && currentTick - noPathSinceTick >= CHASE_ABANDON_TICKS;
+    }
+
+    /**
+     * Whether a companion should stop trying to hurt a mob it cannot reach.
+     *
+     * <p>A mob behind a fence, or one standing on a ledge the companion cannot climb, can be
+     * seen perfectly well and even has a route leading to the ground beside it. The companion
+     * walks up, arrives, and stands there unable to strike: the fight is held until the mob
+     * dies, so it would stand there for ever.</p>
+     *
+     * <p>The proof is time spent without landing a hit, not time spent out of reach: a mob that
+     * is running away is out of reach for as long as the chase lasts, but the companion catches
+     * up and its hits land. A mob whose health does not move is a mob the companion cannot
+     * hurt, and that is what ends the fight.</p>
+     *
+     * @param currentTick      the current server tick
+     * @param unreachableSince the tick the companion first failed to hurt the mob, or
+     *                        {@link Long#MIN_VALUE} while it still is hurting it
+     * @return true when the fight should be called off
+     */
+    static boolean targetUnreachable(long currentTick, long unreachableSince) {
+        return unreachableSince != Long.MIN_VALUE
+                && currentTick - unreachableSince >= TARGET_UNREACHABLE_TICKS;
+    }
+
+    /**
+     * Whether a companion should stop pursuing a fight it cannot close.
+     *
+     * @see #TARGET_BLOCKED_ENGAGE_TICKS
+     */
+    static boolean targetBlockedEngage(long currentTick, long blockedSince) {
+        return blockedSince != Long.MIN_VALUE
+                && currentTick - blockedSince >= TARGET_BLOCKED_ENGAGE_TICKS;
+    }
+
+    /**
+     * Whether the companion is close enough and has line of sight to try its attack right now.
+     */
+    private static boolean canAttemptStrike(Mannequin npc, FollowState state, LivingEntity target) {
+        double strikeDistance = combatDistance(target, npc.getLocation());
+        CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
+        boolean ranged = weapon != null && weapon.isRanged();
+        if (!CompanionLineOfSight.canSee(npc, target)) {
+            return false;
+        }
+        if (ranged) {
+            return strikeDistance <= RANGED_THROW_RANGE;
+        }
+        return strikeDistance <= ATTACK_REACH;
+    }
+
+    /**
+     * Keeps track of how long the companion has been unable to hurt its target.
+     *
+     * <p>The clock starts when the mob's health stops moving and is cleared the moment a hit
+     * lands. A new mob starts a fresh clock, so a companion that just arrived at a fight is
+     * never given up on straight away.</p>
+     *
+     * <p>The clock only runs while the companion has the chance to strike. A companion that is
+     * still closing in on a fleeing mob, or that is walking towards a place to throw from, has
+     * not failed yet — it simply has not swung. Counting those ticks would make a long chase
+     * look like a failure, so the clock is only allowed to run once the companion is in
+     * position and swinging.</p>
+     *
+     * @param state       the companion's state
+     * @param target      the mob it is fighting
+     * @param currentTick the current server tick
+     * @param canStrike   whether the companion is in position to hit the mob right now
+     * @return the tick since which the companion has failed to hurt the mob, or
+     *         {@link Long#MIN_VALUE} while it still is hurting it
+     */
+    private static long trackUnreachable(FollowState state, LivingEntity target, long currentTick,
+                                         boolean canStrike) {
+        UUID targetId = target.getUniqueId();
+        double health = target.getHealth();
+        if (!targetId.equals(state.unreachableTarget)) {
+            // A different mob: the clock starts again, and this first look is only a baseline.
+            state.unreachableTarget = targetId;
+            state.unreachableHealth = health;
+            state.unreachableSinceTick = Long.MIN_VALUE;
+            return Long.MIN_VALUE;
+        }
+        if (health < state.unreachableHealth - 0.0001) {
+            // The mob took damage: the companion can fight it after all, so the clock is cleared.
+            state.unreachableHealth = health;
+            state.unreachableSinceTick = Long.MIN_VALUE;
+            return Long.MIN_VALUE;
+        }
+        // The lowest health seen so far is the baseline, so a mob that heals does not reset
+        // the clock by accident: only a real drop counts as a hit landing.
+        state.unreachableHealth = Math.min(state.unreachableHealth, health);
+        if (!canStrike) {
+            // Still on its way: the clock waits, so a long chase is never mistaken for a failure.
+            return Long.MIN_VALUE;
+        }
+        if (state.unreachableSinceTick == Long.MIN_VALUE) {
+            state.unreachableSinceTick = currentTick;
+        }
+        return state.unreachableSinceTick;
+    }
+
+    /**
+     * Tracks how long the companion has failed to close the gap on a target it cannot strike yet.
+     *
+     * <p>Unlike {@link #trackUnreachable}, this runs while the companion is still walking: a mob
+     * behind a fence may have a full route to the near side, but the gap never shrinks enough to
+     * reach or see the mob. A fleeing mob that the companion is still chasing resets this clock
+     * whenever the gap shrinks.</p>
+     */
+    private static long trackBlockedEngage(FollowState state, double strikeDistance, long currentTick,
+                                           boolean canAttempt) {
+        if (canAttempt) {
+            state.lastEngageDistance = strikeDistance;
+            state.blockedEngageSinceTick = Long.MIN_VALUE;
+            return Long.MIN_VALUE;
+        }
+        if (strikeDistance < state.lastEngageDistance - ENGAGE_PROGRESS_DELTA) {
+            state.lastEngageDistance = strikeDistance;
+            state.blockedEngageSinceTick = Long.MIN_VALUE;
+            return Long.MIN_VALUE;
+        }
+        state.lastEngageDistance = Math.min(state.lastEngageDistance, strikeDistance);
+        if (state.blockedEngageSinceTick == Long.MIN_VALUE) {
+            state.blockedEngageSinceTick = currentTick;
+        }
+        return state.blockedEngageSinceTick;
+    }
+
+    /**
+     * Whether this mob is worth picking up: there must be some way to stand and strike it.
+     *
+     * <p>Caged farm zombies behind glass or fences are skipped so the companion does not stare at
+     * them forever. A mob the companion can already see and hit, or could walk into melee range
+     * of along a clear line, is fair game.</p>
+     */
+    private boolean isEngageable(Mannequin npc, FollowState state, LivingEntity living) {
+        if (canAttemptStrike(npc, state, living)) {
+            return true;
+        }
+        CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
+        boolean ranged = weapon != null && weapon.isRanged();
+        if (ranged) {
+            if (CompanionLineOfSight.canSee(npc, living)) {
+                return true;
+            }
+            return findFiringSpot(npc, living) != null;
+        }
+        Location stand = meleeSpot(npc, living);
+        Location eye = stand.clone().add(0.0, EYE_HEIGHT, 0.0);
+        if (!CompanionLineOfSight.canSeeFrom(npc.getWorld(), eye, living)) {
+            return false;
+        }
+        List<org.bukkit.util.Vector> route = PathPlanner.findPath(npc.getWorld(), npc.getLocation(),
+                stand, PATH_RADIUS, true, false, false);
+        return !route.isEmpty();
+    }
+
+    /**
+     * The horizontal distance between the companion and the mob it is fighting.
+     *
+     * <p>Measured horizontally, the way a player's own melee reach is, so a mob one block up
+     * or down still counts as in reach instead of making the companion stand there refusing to
+     * swing.</p>
+     */
+    private static double combatDistance(LivingEntity target, Location npcLocation) {
+        Location targetPosition = target.getLocation();
+        double reachDx = targetPosition.getX() - npcLocation.getX();
+        double reachDz = targetPosition.getZ() - npcLocation.getZ();
+        return Math.sqrt(reachDx * reachDx + reachDz * reachDz);
+    }
+
+    /**
+     * Gives up on a mob the companion cannot hurt.
+     *
+     * <p>The mob is left alone for a while, so the companion does not walk straight back out to
+     * the same fence on the next tick. It is picked up again afterwards if it is still a threat
+     * and has become reachable.</p>
+     */
+    private static void releaseTarget(FollowState state, LivingEntity target, long currentTick) {
+        state.releasedTargetsUntil.put(target.getUniqueId(),
+                currentTick + TARGET_RELEASE_COOLDOWN_TICKS);
+        state.attackTarget = null;
+        state.unreachableTarget = null;
+        state.unreachableSinceTick = Long.MIN_VALUE;
+        state.lastEngageDistance = Double.MAX_VALUE;
+        state.blockedEngageSinceTick = Long.MIN_VALUE;
     }
 
     /**
@@ -2708,6 +2969,31 @@ public final class CompanionManager {
             // Once a fight starts it is held until the mob dies: a chase is never ended by
             // distance alone, and the emergency teleport brings the companion home afterwards.
             LivingEntity attackTarget = resolveAttackTarget(npc, owner, state);
+            // A mob the companion cannot hurt ends the fight. The companion walks up to it,
+            // cannot land a hit — the mob is behind a fence, or out of reach on a ledge — and
+            // would stand there for ever, because a fight is otherwise held until the mob dies.
+            // The clock runs on the mob's health instead of on the distance: a mob that runs
+            // away is out of reach for as long as the chase lasts, but its health still drops
+            // once the companion catches up. A mob whose health never moves is one the
+            // companion cannot reach, and that is what ends the fight.
+            if (attackTarget != null) {
+                // The companion only counts as failing while it has the chance to strike: a
+                // melee companion within arm's length, a thrower that has the mob in sight.
+                // Until then it is still closing in, and a long chase must not look like a
+                // failure.
+                double strikeDistance = combatDistance(attackTarget, npcLocation);
+                boolean canStrike = canAttemptStrike(npc, state, attackTarget);
+                long unreachableSince = trackUnreachable(state, attackTarget, currentTick, canStrike);
+                long blockedSince = trackBlockedEngage(state, strikeDistance, currentTick, canStrike);
+                if (targetUnreachable(currentTick, unreachableSince)
+                        || targetBlockedEngage(currentTick, blockedSince)) {
+                    releaseTarget(state, attackTarget, currentTick);
+                    attackTarget = null;
+                    targetSpot = waitMode
+                            ? waitSpot(npc, state, currentTick)
+                            : formationSpot(npc, owner, state, closeMode);
+                }
+            }
             if (attackTarget != null) {
                 targetSpot = combatSpot(npc, state, attackTarget, currentTick);
             }
@@ -2735,10 +3021,7 @@ public final class CompanionManager {
             // reach instead of making the companion stand there refusing to swing.
             double combatDistance = Double.MAX_VALUE;
             if (attackTarget != null) {
-                Location targetPosition = attackTarget.getLocation();
-                double reachDx = targetPosition.getX() - npcLocation.getX();
-                double reachDz = targetPosition.getZ() - npcLocation.getZ();
-                combatDistance = Math.sqrt(reachDx * reachDx + reachDz * reachDz);
+                combatDistance = combatDistance(attackTarget, npcLocation);
             }
             // The weapon in hand decides how the fight is fought. A melee companion has to get
             // within arm's length of the mob before it can strike; a companion that throws
@@ -2794,7 +3077,8 @@ public final class CompanionManager {
             // companion settled a whisker outside reach would stand there holding its sword and
             // never strike. Outside combat the normal formation distance decides.
             boolean inReach = attackTarget != null
-                    && combatDistance <= (ranged ? RANGED_THROW_RANGE : ATTACK_REACH);
+                    && combatDistance <= (ranged ? RANGED_THROW_RANGE : ATTACK_REACH)
+                    && CompanionLineOfSight.canSee(npc, attackTarget);
             if (inReach) {
                 // In reach: face the mob and strike on cooldown. The head stays on the target
                 // whether the companion is still closing in or already standing its ground.
@@ -2895,9 +3179,7 @@ public final class CompanionManager {
                 // picked up again. This is what stops an unreachable mob from being chased for
                 // ever — the one thing that ends a chase besides the mob actually dying.
                 if (attackTarget != null && chaseAbandoned(currentTick, state.noPathSinceTick)) {
-                    state.releasedTargetsUntil.put(attackTarget.getUniqueId(),
-                            currentTick + CHASE_ABANDON_TICKS);
-                    state.attackTarget = null;
+                    releaseTarget(state, attackTarget, currentTick);
                     attackTarget = null;
                 }
                 // The rescue home is for a companion with nothing left to fight. A rescue that
