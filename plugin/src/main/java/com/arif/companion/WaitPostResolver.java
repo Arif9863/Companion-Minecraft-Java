@@ -29,6 +29,9 @@ final class WaitPostResolver {
     /** How many blocks sideways the search may look for a floor. */
     private static final int SEARCH_RADIUS = 2;
 
+    /** Entity step height: standing surfaces farther above the probe are not accepted. */
+    private static final double STEP_UP = 0.601;
+
     private WaitPostResolver() {
     }
 
@@ -79,9 +82,10 @@ final class WaitPostResolver {
     /**
      * The position a companion stands at when it is put down at that spot.
      *
-     * <p>The stored height may point at the free space the companion was standing in, or at the
-     * block it was standing on. Both readings are tried: the first one is the usual case, the
-     * second one is what a companion on a carpet or a slab needs.</p>
+     * <p>A horizontal probe may still carry the companion's height while the neighbouring column
+     * is a stack of full blocks, so several surfaces in that column are tried and the one closest
+     * to the probe height wins. The scan never reaches for a roof: surfaces more than one step
+     * above the probe are ignored.</p>
      *
      * @return the standing position, or null when the spot does not fit
      */
@@ -91,26 +95,41 @@ final class WaitPostResolver {
         }
         int x = spot.getBlockX();
         int z = spot.getBlockZ();
-        int y = spot.getBlockY();
-        Block feet = world.getBlockAt(x, y, z);
-        // The height points at the free space the companion was standing in: its feet rest
-        // there, so there has to be a floor below to rest on.
-        if (isFree(feet) && supports(world.getBlockAt(x, y - 1, z))) {
-            Location standing = standingOn(world, spot, y);
-            if (standing != null) {
-                return standing;
+        double minFeet = spot.getY() - 2.0;
+        double maxFeet = spot.getY() + STEP_UP;
+        int baseY = Math.max(0, (int) Math.floor(spot.getY()) - 2);
+        int topY = (int) Math.ceil(spot.getY() + STEP_UP) + 1;
+        Location best = null;
+        double bestDelta = Double.MAX_VALUE;
+        for (int y = baseY; y <= topY; y++) {
+            Block block = world.getBlockAt(x, y, z);
+            if (isFree(block) && supports(world.getBlockAt(x, y - 1, z))) {
+                Location standing = standingOn(world, spot, y);
+                if (standing != null && withinFeetBand(standing.getY(), minFeet, maxFeet)) {
+                    double delta = Math.abs(standing.getY() - spot.getY());
+                    if (delta < bestDelta) {
+                        bestDelta = delta;
+                        best = standing;
+                    }
+                }
+            }
+            double top = shapeTop(block, y);
+            if (top > y + 0.0001) {
+                Location standing = standingOn(world, spot, top);
+                if (standing != null && withinFeetBand(standing.getY(), minFeet, maxFeet)) {
+                    double delta = Math.abs(standing.getY() - spot.getY());
+                    if (delta < bestDelta) {
+                        bestDelta = delta;
+                        best = standing;
+                    }
+                }
             }
         }
-        // The height points at the block the companion was standing on: a slab, a stair or a
-        // carpet. Its feet belong on top of that block, at the height the shape reaches.
-        double top = shapeTop(feet, y);
-        if (top > y) {
-            Location standing = standingOn(world, spot, top);
-            if (standing != null) {
-                return standing;
-            }
-        }
-        return null;
+        return best;
+    }
+
+    private static boolean withinFeetBand(double feetY, double minFeet, double maxFeet) {
+        return feetY >= minFeet && feetY <= maxFeet;
     }
 
     /**

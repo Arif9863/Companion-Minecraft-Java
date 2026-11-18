@@ -2600,12 +2600,18 @@ public final class CompanionManager {
         return sideSpot(ownerLocation);
     }
 
-    /** Whether a companion could stand at the given location without clipping into blocks. */
+    /**
+     * Whether a companion could stand at the given location without clipping into blocks.
+     *
+     * <p>{@code Block.isPassable()} treats every partial block — slabs, stairs, carpets — as solid,
+     * so a spot on top of a full block was rejected when the stored {@code Y} still sat at slab
+     * height. {@link WaitPostResolver} measures real collision shapes instead.</p>
+     */
     private static boolean isFreeForCompanion(Location location) {
-        Block feet = location.getBlock();
-        Block head = location.getWorld().getBlockAt(location.getBlockX(), location.getBlockY() + 1,
-                location.getBlockZ());
-        return feet.isPassable() && head.isPassable();
+        if (location == null || location.getWorld() == null) {
+            return false;
+        }
+        return WaitPostResolver.standingAt(location.getWorld(), location) != null;
     }
 
     /**
@@ -4426,8 +4432,9 @@ public final class CompanionManager {
                     npcLocation.getX() - offsetX * backScale,
                     npcLocation.getY(),
                     npcLocation.getZ() - offsetZ * backScale);
-            if (isFreeForCompanion(back) && hasWalkableRoute(world, npcLocation, back)) {
-                return back;
+            Location backStand = WaitPostResolver.standingAt(world, back);
+            if (backStand != null && hasWalkableRoute(world, npcLocation, backStand)) {
+                return backStand;
             }
         }
 
@@ -4440,22 +4447,23 @@ public final class CompanionManager {
                     npcLocation.getX() + Math.sin(angle) * radius,
                     npcLocation.getY(),
                     npcLocation.getZ() + Math.cos(angle) * radius);
-            if (!isFreeForCompanion(candidate)) {
+            Location standing = WaitPostResolver.standingAt(world, candidate);
+            if (standing == null) {
                 continue;
             }
             // Stay inside the wander radius around the anchor.
-            double candidateOffsetX = candidate.getX() - anchor.getX();
-            double candidateOffsetZ = candidate.getZ() - anchor.getZ();
+            double candidateOffsetX = standing.getX() - anchor.getX();
+            double candidateOffsetZ = standing.getZ() - anchor.getZ();
             if (candidateOffsetX * candidateOffsetX + candidateOffsetZ * candidateOffsetZ
                     > WAIT_WANDER_RADIUS * WAIT_WANDER_RADIUS) {
                 continue;
             }
             // The point must be reachable from where the companion stands, so it does not try to
             // walk into a wall to get there.
-            List<org.bukkit.util.Vector> route = PathPlanner.findPath(world, npcLocation, candidate,
+            List<org.bukkit.util.Vector> route = PathPlanner.findPath(world, npcLocation, standing,
                     PATH_RADIUS, false, false, false);
             if (!route.isEmpty()) {
-                return candidate;
+                return standing;
             }
         }
         // Nowhere to go: rest here for a while and try again later.
