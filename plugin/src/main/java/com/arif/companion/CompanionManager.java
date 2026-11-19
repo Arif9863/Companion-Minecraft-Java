@@ -2467,7 +2467,13 @@ public final class CompanionManager {
                 targetLocation.getZ() - dz * scale);
         if (!isFreeForCompanion(spot)) {
             // The spot hangs in the air or inside a block; the mob's own block always works.
-            return targetLocation.clone();
+            Location own = targetLocation.clone();
+            if (isFreeForCompanion(own)) {
+                return own;
+            }
+            // Even the mob's own block is unusable — it may be standing in lava. The companion
+            // stays where it is rather than walking into the pool to get closer.
+            return npcLocation.clone();
         }
         return spot;
     }
@@ -2578,7 +2584,13 @@ public final class CompanionManager {
                 npcLocation.getY(),
                 npcLocation.getZ() - dz / length * back);
         if (!isFreeForCompanion(spot)) {
-            return targetLocation.clone();
+            Location own = targetLocation.clone();
+            if (isFreeForCompanion(own)) {
+                return own;
+            }
+            // The mob's own block is unusable too, so the companion holds its ground rather
+            // than stepping into whatever the mob is standing in.
+            return npcLocation.clone();
         }
         return spot;
     }
@@ -3260,6 +3272,21 @@ public final class CompanionManager {
             state.lastGoalDz = wz;
             adoptOpenDoors(npc.getWorld(), state, npcLocation);
 
+            // A lava pool is never walked into and never jumped across. The route may still
+            // lead past one — the mob the companion is chasing may be on the far side — so the
+            // column ahead is checked before it moves: if lava is in the way, the companion
+            // stops where it is and lets the route be replanned rather than cooking itself.
+            if (lavaAhead(npc.getWorld(), npcLocation, wx, wz)) {
+                state.path = List.of();
+                state.plannedGoal = null;
+                clearParkourState(state);
+                state.lastPlanTick = Long.MIN_VALUE;
+                org.bukkit.util.Vector velocity = npc.getVelocity();
+                npc.setVelocity(new org.bukkit.util.Vector(velocity.getX() * 0.2, velocity.getY(),
+                        velocity.getZ() * 0.2));
+                return;
+            }
+
             // Track progress so a companion wedged against geometry can be rescued.
             if (state.lastProgressPosition == null || movedSince(state.lastProgressPosition, npcLocation)) {
                 state.lastProgressPosition = npcLocation.toVector();
@@ -3443,13 +3470,16 @@ public final class CompanionManager {
      * is a lower floor beyond it.</p>
      */
     static boolean isGapAhead(Mannequin npc, Location npcLocation, double wx, double wz) {
+        return isGapAhead(npcLocation.getWorld(), npcLocation, wx, wz);
+    }
+
+    private static boolean isGapAhead(World world, Location npcLocation, double wx, double wz) {
         double length = Math.sqrt(wx * wx + wz * wz);
         if (length < 1.0E-3) {
             return false;
         }
         double dirX = wx / length;
         double dirZ = wz / length;
-        World world = npcLocation.getWorld();
         int originY = (int) Math.floor(npcLocation.getY());
         int originX = npcLocation.getBlockX();
         int originZ = npcLocation.getBlockZ();
@@ -3477,6 +3507,19 @@ public final class CompanionManager {
     }
 
     /**
+     * Whether there is a gap in the ground ahead of the companion.
+     *
+     * <p>Exposed for the tests, which check that a lava pool is stepped around rather than
+     * jumped over.</p>
+     */
+    static boolean isGapAheadAt(World world, Location npcLocation, double wx, double wz) {
+        if (world == null || npcLocation == null) {
+            return false;
+        }
+        return isGapAhead(world, npcLocation, wx, wz);
+    }
+
+    /**
      * Whether there is a solid block to stand on at the given position.
      *
      * <p>A carpet counts as a floor, but only when there is a real floor underneath it. The
@@ -3493,6 +3536,13 @@ public final class CompanionManager {
         }
         Block block = world.getBlockAt(x, y, z);
         if (block.getType() == Material.WATER) {
+            return true;
+        }
+        // Lava is not a floor, but neither is it a hole. A fluid has no collision shape, so
+        // without this the pool would read as empty ground and the companion would treat it as
+        // a gap to jump over — straight into the lava. Treating it as solid keeps the companion
+        // off the edge, and it never jumps a column that holds lava.
+        if (block.getType() == Material.LAVA) {
             return true;
         }
         if (PathPlanner.isCarpet(block)) {
@@ -3583,6 +3633,48 @@ public final class CompanionManager {
 
 
 
+    /**
+     * Whether lava lies in the column the companion is about to move into.
+     *
+     * <p>The check looks along the direction of travel, at the height the companion's feet are
+     * at and the one below it, for the two blocks ahead. A pool at that height is a wall the
+     * companion must not walk into; a pool one block lower is what it would drop into.</p>
+     *
+     * <p>Lava further along the route is not this check's business: the route planner already
+     * refuses to route through lava, so anything found here is the column the companion is
+     * about to step into right now.</p>
+     *
+     * @param world     the world the companion is in
+     * @param location  where the companion is standing
+     * @param directionX the horizontal direction of travel
+     * @param directionZ the horizontal direction of travel
+     * @return true when lava blocks the way ahead
+     */
+    static boolean lavaAhead(World world, Location location, double directionX, double directionZ) {
+        double length = Math.sqrt(directionX * directionX + directionZ * directionZ);
+        if (length < 1.0E-3) {
+            return false;
+        }
+        int originX = location.getBlockX();
+        int originY = location.getBlockY();
+        int originZ = location.getBlockZ();
+        for (int step = 1; step <= 2; step++) {
+            int x = originX + (int) Math.round(directionX / length * step);
+            int z = originZ + (int) Math.round(directionZ / length * step);
+            if (!world.isChunkLoaded(x >> 4, z >> 4)) {
+                continue;
+            }
+            // At the companion's own height, and one block lower — that is the pool it would
+            // step into, and the one it would drop into.
+            for (int y = originY - 1; y <= originY; y++) {
+                if (world.getBlockAt(x, y, z).getType() == Material.LAVA) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /** Whether the far side of the gap sits one block higher than the companion. */
     private static PathPlanner.BlockPos findParkourLedge(World world, Location npcLocation,
                                                          double wx, double wz) {
@@ -3653,6 +3745,13 @@ public final class CompanionManager {
         Block feet = world.getBlockAt(x, y, z);
         Block head = world.getBlockAt(x, y + 1, z);
         if (feet.getType() == Material.WATER || head.getType() == Material.WATER) {
+            return false;
+        }
+        // Lava is never a column worth jumping into. A fluid has no collision shape, so it
+        // would otherwise look as empty as open air: the companion reads the pool as a gap and
+        // leaps straight into it. Water is rejected above for the same reason — a companion
+        // that falls into a pool swims, which is survivable, but lava is not.
+        if (feet.getType() == Material.LAVA || head.getType() == Material.LAVA) {
             return false;
         }
         boolean feetFree = PathPlanner.isCarpet(feet)

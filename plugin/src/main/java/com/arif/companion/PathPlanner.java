@@ -471,6 +471,12 @@ final class PathPlanner {
         if (block.getType() == Material.WATER) {
             return true;
         }
+        // Lava counts as ground here even though it is not solid: a fluid has no collision
+        // shape, so without this a lava pool reads as a hole and the companion jumps across
+        // it — into the lava. Treating the pool as floor keeps the route away from it.
+        if (block.getType() == Material.LAVA) {
+            return true;
+        }
         return !hasNoCollision(block);
     }
 
@@ -535,6 +541,18 @@ final class PathPlanner {
     }
 
     /**
+     * Whether a companion could stand at the given place.
+     *
+     * <p>Exposed for the tests, which check that a companion is never placed over a lava pool.</p>
+     */
+    static boolean isStandableAt(World world, Location location) {
+        if (world == null || location == null) {
+            return false;
+        }
+        return isStandable(world, toNode(location));
+    }
+
+    /**
      * Whether the two-block-high column at the given node is clear, without requiring a floor.
      * Used only while checking a controlled fall down to a known landing block.
      */
@@ -574,6 +592,13 @@ final class PathPlanner {
         }
         Block support = world.getBlockAt(below.x(), below.y(), below.z());
         if (isBarrier(support)) {
+            return false;
+        }
+        // Lava is not a floor a companion may stand over: standing on the block above a pool
+        // would put the companion's feet in the lava. A fluid has no collision shape, so
+        // without this check the pool would read as empty ground and the route would lead
+        // straight over it.
+        if (support.getType() == Material.LAVA) {
             return false;
         }
         return !hasNoCollision(support);
