@@ -470,6 +470,14 @@ public final class CompanionManager {
      * lets it strike.</p>
      */
     private static final double ATTACK_STOP_DISTANCE = 2.8;
+    /**
+     * How long the answer to "can this mob be fought at all" is reused, in ticks.
+     *
+     * <p>Working it out means looking for a place to strike the mob from, which is far too much
+     * work to redo for every mob on every tick. The answer is held for a moment and reused, so
+     * a farm full of mobs costs one search per mob per second instead of one per tick.</p>
+     */
+    private static final long ENGAGEABLE_CACHE_TICKS = 20L;
     /** How often a new marked hostile may be reported in owner chat (10 seconds). */
     private static final long MARKER_ALERT_COOLDOWN_TICKS = 200L;
     /** Particle marker interval: every 3 ticks so it stays visible without flooding particles. */
@@ -528,6 +536,16 @@ public final class CompanionManager {
      * Enderman that is hit teleports away and may well come back for the owner instead.</p>
      */
     private static final Set<EntityType> NEUTRAL_HOSTILE_MOBS = Set.of(EntityType.ENDERMAN);
+
+    /**
+     * The answer to "can this mob be fought at all", and from where.
+     *
+     * @param spot the spot the companion strikes the mob from, or null when it cannot be
+     *             reached
+     * @param tick the tick the answer was worked out at
+     */
+    private record EngageableAnswer(Location spot, long tick) {
+    }
 
     private static final class FollowState {
         private List<org.bukkit.util.Vector> path = List.of();
@@ -660,6 +678,18 @@ public final class CompanionManager {
         private long firingSpotTick = Long.MIN_VALUE;
         /** The mob the firing spot was found for, so a new target invalidates it. */
         private UUID firingSpotTarget;
+        /**
+         * The answer to "can this mob be fought at all", and from where, per mob.
+         *
+         * <p>Working it out means looking for a place to strike the mob from, which is far too
+         * much work to redo for every mob on every tick. The answer is held for a moment and
+         * reused, so a farm full of mobs costs one search per mob per second instead of one per
+         * tick.</p>
+         *
+         * <p>A null spot means the mob cannot be reached at all — it is behind a solid wall, or
+         * there is no way to stand near it.</p>
+         */
+        private final Map<UUID, EngageableAnswer> engageableAnswers = new HashMap<>();
         /** The spot this companion was told to wait at, in WAIT mode. */
         private Location waitSpot;
         /** The direction the companion is currently strolling towards. */
@@ -1964,13 +1994,12 @@ public final class CompanionManager {
                     continue;
                 }
                 double distance = living.getLocation().distanceSquared(npcLocation);
-                if (distance < bestDistance) {
+                if (closerTarget(bestDistance, distance)) {
                     bestDistance = distance;
                     best = living;
                 }
             }
         }
-
         for (Entity entity : npc.getNearbyEntities(radius, radius, radius)) {
             if (!(entity instanceof LivingEntity living) || !isHostileMob(living)) {
                 continue;
@@ -2006,7 +2035,7 @@ public final class CompanionManager {
                 continue;
             }
             double distance = living.getLocation().distanceSquared(npcLocation);
-            if (distance < bestDistance) {
+            if (closerTarget(bestDistance, distance)) {
                 bestDistance = distance;
                 best = living;
             }
@@ -2028,6 +2057,28 @@ public final class CompanionManager {
     /** Whether auto-spawn should place the companion on a saved wait post instead of formation. */
     static boolean shouldSpawnAtWaitPost(FollowMode mode, Location spot) {
         return mode == FollowMode.WAIT && spot != null && spot.getWorld() != null;
+    }
+
+    /**
+     * Whether a mob is a better fight than the one already chosen.
+     *
+     * <p>The closest mob wins. That is what makes the companion deal with what is right in
+     * front of it instead of walking off towards something further away: a mob penned in
+     * behind a fence two blocks off is closer than a mob in the open eight blocks away, and it
+     * is closer to the companion, not to the owner.</p>
+     *
+     * <p>The distance is measured from the companion, not from the owner. The owner may be
+     * standing on the far side of the farm, and the mob that is coming for him may be far from
+     * the companion too — but the fight belongs to the companion, so the companion's own
+     * distance decides.</p>
+     *
+     * @param currentDistance the distance of the mob already chosen, or
+     *                         {@link Double#MAX_VALUE} when none has been chosen yet
+     * @param candidateDistance the distance of the mob being considered
+     * @return true when the candidate is closer
+     */
+    static boolean closerTarget(double currentDistance, double candidateDistance) {
+        return candidateDistance < currentDistance;
     }
 
     /**
@@ -2271,16 +2322,22 @@ public final class CompanionManager {
 
     /**
      * Whether the companion is close enough and has line of sight to try its attack right now.
+     *
+     * <p>A melee companion needs a clear swing, not a clear shot: a sword reaches through a
+     * fence or a glass pane, so a mob penned in a farm can be hit from outside the pen.</p>
      */
     private static boolean canAttemptStrike(Mannequin npc, FollowState state, LivingEntity target) {
         double strikeDistance = combatDistance(target, npc.getLocation());
         CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
         boolean ranged = weapon != null && weapon.isRanged();
-        if (!CompanionLineOfSight.canSee(npc, target)) {
-            return false;
-        }
         if (ranged) {
+            if (!CompanionLineOfSight.canSee(npc, target)) {
+                return false;
+            }
             return strikeDistance <= RANGED_THROW_RANGE;
+        }
+        if (!CompanionLineOfSight.canSeeMelee(npc, target)) {
+            return false;
         }
         return strikeDistance <= ATTACK_REACH;
     }
@@ -2368,22 +2425,91 @@ public final class CompanionManager {
      * Whether this mob is worth picking up: there must be some way to stand and strike it.
      *
      * <p>Caged farm zombies behind glass or fences are skipped so the companion does not stare at
-     * them forever. A mob the companion can already see and hit, or could walk into melee range
-     * of along a clear line, is fair game.</p>
+     * them forever — but only when they really cannot be reached. A mob behind a thin barrier is
+     * still reachable: a sword goes through a fence or a glass pane, so the companion stands
+     * outside the pen and hits the mob through it. A mob behind a solid wall is not reachable at
+     * all, and the companion leaves it alone.</p>
      */
     private boolean isEngageable(Mannequin npc, FollowState state, LivingEntity living) {
         if (canAttemptStrike(npc, state, living)) {
             return true;
         }
-        CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
-        boolean ranged = weapon != null && weapon.isRanged();
-        if (ranged) {
-            if (CompanionLineOfSight.canSee(npc, living)) {
-                return true;
-            }
-            return findFiringSpot(npc, living) != null;
+        // The same spot the companion would walk to, so the mob is not picked up and then
+        // found unreachable the moment the companion starts walking.
+        return barrierStrikeSpot(npc, state, living, Bukkit.getCurrentTick()) != null;
+    }
+
+    /**
+     * Where the companion would strike this mob from, or null when it cannot be reached.
+     *
+     * <p>The answer is worked out once and kept for a moment: searching for a spot means trying
+     * a ring of places around the mob and checking every one of them, which is far too much
+     * work to redo for every mob on every tick.</p>
+     */
+    private EngageableAnswer engageableAnswer(Mannequin npc, FollowState state, LivingEntity living) {
+        UUID mobId = living.getUniqueId();
+        EngageableAnswer cached = state.engageableAnswers.get(mobId);
+        long currentTick = Bukkit.getCurrentTick();
+        if (cached != null && currentTick - cached.tick() < ENGAGEABLE_CACHE_TICKS) {
+            return cached;
         }
-        return findMeleeEngageSpot(npc, living) != null;
+        EngageableAnswer answer = findEngageSpot(npc, state, living);
+        state.engageableAnswers.put(mobId, answer);
+        return answer;
+    }
+
+    /**
+     * The spot the companion strikes the mob from, or null when the mob cannot be reached.
+     *
+     * <p>The answer comes from the same search that decides whether the mob can be fought at
+     * all, so the companion does not walk to a different place than the one it was judged
+     * against.</p>
+     *
+     * <p>A cached spot goes stale when the mob moves: the companion would walk to a place that
+     * no longer reaches it. The spot is therefore only reused while it still reaches the mob.</p>
+     */
+    private Location barrierStrikeSpot(Mannequin npc, FollowState state, LivingEntity target,
+                                       long currentTick) {
+        EngageableAnswer answer = engageableAnswer(npc, state, target);
+        Location spot = answer.spot();
+        if (spot == null) {
+            return null;
+        }
+        // The spot has to still reach the mob, and the companion has to still be able to
+        // stand there.
+        Location eye = spot.clone().add(0.0, EYE_HEIGHT, 0.0);
+        if (!CompanionLineOfSight.canSeeMeleeFrom(npc.getWorld(), eye, target)) {
+            return null;
+        }
+        if (!CompanionLineOfSight.standable(spot)) {
+            return null;
+        }
+        return spot;
+    }
+
+    /**
+     * Searches for a place the companion can strike the given mob from.
+     *
+     * <p>Two cases are tried. The first is the ordinary one: a spot within melee reach of the
+     * mob that the companion can walk to and strike from. The second is a mob behind a thin
+     * barrier: a spot on the near side of the fence or the glass, from where the sword reaches
+     * through it. A mob behind a solid wall is not reachable at all.</p>
+     */
+    private EngageableAnswer findEngageSpot(Mannequin npc, FollowState state, LivingEntity target) {
+        long currentTick = Bukkit.getCurrentTick();
+        CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
+        if (weapon != null && weapon.isRanged()) {
+            if (CompanionLineOfSight.canSee(npc, target)) {
+                return new EngageableAnswer(npc.getLocation(), currentTick);
+            }
+            Location firing = findFiringSpot(npc, target);
+            return new EngageableAnswer(firing, currentTick);
+        }
+        Location melee = findMeleeEngageSpot(npc, target);
+        if (melee != null) {
+            return new EngageableAnswer(melee, currentTick);
+        }
+        return new EngageableAnswer(null, currentTick);
     }
 
     /**
@@ -2488,10 +2614,17 @@ public final class CompanionManager {
      * @param state  the companion's state, which says which weapon it carries
      * @param target the mob being fought
      */
-    private static Location combatSpot(Mannequin npc, FollowState state, LivingEntity target,
-                                       long currentTick) {
+    private Location combatSpot(Mannequin npc, FollowState state, LivingEntity target,
+                                long currentTick) {
         CompanionWeapons.Weapon weapon = CompanionWeapons.of(state.archetype);
         if (weapon == null || !weapon.isRanged()) {
+            // A mob behind a thin barrier is struck from the near side of it, so the companion
+            // does not have to step into the pen to hit it. The same spot is used for a mob in
+            // the open: it is the place the companion was judged to fight from.
+            Location strikeSpot = barrierStrikeSpot(npc, state, target, currentTick);
+            if (strikeSpot != null) {
+                return strikeSpot;
+            }
             return meleeSpot(npc, target);
         }
         Location targetLocation = target.getLocation();
@@ -2589,24 +2722,20 @@ public final class CompanionManager {
     }
 
     /**
-     * Looks for a spot the companion can throw the trident from.
+     * Finds a spot from which the companion can strike the given mob with a melee blow.
      *
-     * <p>The spots are tried in rings around the mob. A spot that is close to the mob is
-     * preferred, because the trident has less to travel and less to miss; a spot further away
-     * is only used when nothing closer has a clear line.</p>
+     * <p>Two kinds of spot count. The first is the ordinary one: a spot next to the mob that
+     * the companion can walk to. The second is a spot on the near side of a thin barrier: a
+     * sword reaches through a fence or a glass pane, so a mob penned in a farm is hit from
+     * outside the pen. Only a block that really fills its space — a wall, a chest — stands in
+     * the way.</p>
      *
-     * <p>Every spot has to be free to stand on and to have an unobstructed line to the mob, so
-     * the companion never walks into geometry and never picks a spot it still cannot throw
-     * from.</p>
+     * <p>The rings around the mob are tried from the closest outwards. A ring that offers no
+     * spot at all is skipped, but a ring that offers spots the companion cannot walk to is not
+     * the end of the search: the spot that works may well be one ring further out, on the other
+     * side of the fence.</p>
      *
-     * @return the spot to walk to, or {@code null} when no spot with a clear line was found
-     */
-    /**
-     * A stand point within melee reach of the mob where the companion can see it and walk to it.
-     *
-     * <p>Unlike a single {@link #meleeSpot} on the near side, this searches around the mob the
-     * same way {@link #findFiringSpot} does for throwers. A caged farm zombie may only have a
-     * clear line on one side; the companion side is often the wrong one.</p>
+     * @return the spot to strike from, or {@code null} when the mob cannot be reached
      */
     private static Location findMeleeEngageSpot(Mannequin npc, LivingEntity target) {
         World world = npc.getWorld();
@@ -2627,11 +2756,13 @@ public final class CompanionManager {
                 if (standing == null || !CompanionLineOfSight.standable(standing)) {
                     continue;
                 }
-                Location eye = standing.clone().add(0.0, EYE_HEIGHT, 0.0);
-                if (!CompanionLineOfSight.canSeeFrom(world, eye, target)) {
+                if (combatDistance(target, standing) > ATTACK_REACH + 0.05) {
                     continue;
                 }
-                if (combatDistance(target, standing) > ATTACK_REACH + 0.05) {
+                Location eye = standing.clone().add(0.0, EYE_HEIGHT, 0.0);
+                // The melee rule, not the shot rule: a sword reaches through a fence or a
+                // glass pane, so a mob penned in a farm is still reachable.
+                if (!CompanionLineOfSight.canSeeMeleeFrom(world, eye, target)) {
                     continue;
                 }
                 candidates.add(standing);
@@ -2641,13 +2772,23 @@ public final class CompanionManager {
                     return candidate;
                 }
             }
-            if (!candidates.isEmpty()) {
-                return null;
-            }
         }
         return null;
     }
 
+    /**
+     * Looks for a spot the companion can throw the trident from.
+     *
+     * <p>The spots are tried in rings around the mob. A spot that is close to the mob is
+     * preferred, because the trident has less to travel and less to miss; a spot further away
+     * is only used when nothing closer has a clear line.</p>
+     *
+     * <p>Every spot has to be free to stand on and to have an unobstructed line to the mob, so
+     * the companion never walks into geometry and never picks a spot it still cannot throw
+     * from.</p>
+     *
+     * @return the spot to walk to, or {@code null} when no spot with a clear line was found
+     */
     private static Location findFiringSpot(Mannequin npc, LivingEntity target) {
         World world = npc.getWorld();
         Location targetLocation = target.getLocation();
@@ -2955,9 +3096,13 @@ public final class CompanionManager {
                 return;
             }
             // The list of mobs that were let go is cleaned here, so it cannot grow while the
-            // companion has nothing to fight.
+            // companion has nothing to fight. The answers about which mobs can be reached are
+            // cleaned for the same reason: a farm full of mobs would otherwise leave an answer
+            // behind for every one of them, for ever.
             long now = Bukkit.getCurrentTick();
             state.releasedTargetsUntil.entrySet().removeIf(entry -> now >= entry.getValue());
+            state.engageableAnswers.entrySet()
+                    .removeIf(entry -> now - entry.getValue().tick() >= ENGAGEABLE_CACHE_TICKS * 8);
             if (!npc.getWorld().equals(owner.getWorld())) {
                 // A waiting companion stays where it was left, even in another world: pulling it
                 // back to the owner would undo the whole point of the command.
@@ -3094,6 +3239,15 @@ public final class CompanionManager {
             double arriveAt = attackTarget == null
                     ? standStill
                     : (ranged ? RANGED_KEEP_DISTANCE : ATTACK_STOP_DISTANCE);
+            // A mob behind a barrier is fought from the other side of it, so the companion
+            // cannot come as close as it would otherwise do. It stops at the full melee reach
+            // instead, which is as close as the fence allows.
+            if (attackTarget != null && !ranged) {
+                Location strikeSpot = barrierStrikeSpot(npc, state, attackTarget, currentTick);
+                if (strikeSpot != null) {
+                    arriveAt = Math.max(arriveAt, ATTACK_REACH);
+                }
+            }
 
             // Emergency rescue on a vertical separation. When the owner stands on safe ground and
             // the companion is far below, waiting for the usual 24-block radius is wrong: the
@@ -3137,9 +3291,14 @@ public final class CompanionManager {
             // stop distance, but a swing is allowed at the full vanilla reach — otherwise a
             // companion settled a whisker outside reach would stand there holding its sword and
             // never strike. Outside combat the normal formation distance decides.
+            //
+            // A melee companion needs a clear swing, not a clear shot: a sword reaches through
+            // a fence or a glass pane, so a mob penned in a farm is still struck from outside.
             boolean inReach = attackTarget != null
                     && combatDistance <= (ranged ? RANGED_THROW_RANGE : ATTACK_REACH)
-                    && CompanionLineOfSight.canSee(npc, attackTarget);
+                    && (ranged
+                    ? CompanionLineOfSight.canSee(npc, attackTarget)
+                    : CompanionLineOfSight.canSeeMelee(npc, attackTarget));
             if (inReach) {
                 // In reach: face the mob and strike on cooldown. The head stays on the target
                 // whether the companion is still closing in or already standing its ground.

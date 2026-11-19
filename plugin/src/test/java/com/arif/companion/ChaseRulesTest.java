@@ -112,6 +112,21 @@ public final class ChaseRulesTest {
                 CompanionManager.ownerThreatSearchEnabled(FollowMode.WAIT));
 
         System.out.println();
+        System.out.println("=== the closest mob is the one that is fought ===");
+        // The complaint: the companion walked past a mob that was right there, penned in
+        // behind a fence, and went off to fight something further away. The closest mob wins,
+        // measured from the companion rather than from the owner — the fight belongs to the
+        // companion, so the companion's own distance decides.
+        check("a nearer mob is the better fight", true,
+                CompanionManager.closerTarget(64.0, 9.0));
+        check("a further mob is not the better fight", false,
+                CompanionManager.closerTarget(9.0, 64.0));
+        check("the first mob chosen is taken when nothing is chosen yet", true,
+                CompanionManager.closerTarget(Double.MAX_VALUE, 64.0));
+        check("a mob at the same distance does not replace the one chosen", false,
+                CompanionManager.closerTarget(9.0, 9.0));
+
+        System.out.println();
         System.out.println("=== the ground a waiting companion holds ===");
         TestWorld testWorld = new TestWorld();
         World world = testWorld.proxy();

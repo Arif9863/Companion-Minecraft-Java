@@ -8,6 +8,7 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.type.Door;
 import org.bukkit.block.data.type.Fence;
 import org.bukkit.block.data.type.Gate;
+import org.bukkit.block.data.type.GlassPane;
 import org.bukkit.block.data.type.TrapDoor;
 import org.bukkit.util.VoxelShape;
 import org.bukkit.util.Vector;
@@ -138,8 +139,12 @@ public final class PlannerRulesTest {
         return proxy(TrapDoor.class, false);
     }
 
-    private static BlockData fenceData() {
+    static BlockData fenceData() {
         return proxy(Fence.class, false);
+    }
+
+    static BlockData glassPaneData() {
+        return proxy(GlassPane.class, false);
     }
 
     static Object defaultValue(Class<?> type) {

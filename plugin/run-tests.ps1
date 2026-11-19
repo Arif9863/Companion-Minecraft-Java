@@ -35,7 +35,9 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 
 foreach ($name in @('com.arif.companion.PlannerRulesTest', 'com.arif.companion.GapAheadTest',
                     'com.arif.companion.LineOfSightTest', 'com.arif.companion.ChaseRulesTest',
-                    'com.arif.companion.DoorRulesTest')) {
+                    'com.arif.companion.DoorRulesTest', 'com.arif.companion.BarrierReachTest',
+                    'com.arif.companion.LavaRulesTest', 'com.arif.companion.SlabStuckTest',
+                    'com.arif.companion.WaitPostResolverTest')) {
     Write-Host ""
     Write-Host "== $name =="
     & $java -cp "$testOut;$cp" $name

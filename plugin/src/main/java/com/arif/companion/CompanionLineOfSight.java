@@ -51,6 +51,25 @@ final class CompanionLineOfSight {
      * @return true when nothing solid stands between them
      */
     static boolean canSee(Mannequin companion, LivingEntity target) {
+        return canSee(companion, target, false);
+    }
+
+    /**
+     * Whether the companion can hit the target with a melee blow.
+     *
+     * <p>A sword reaches through a fence or a glass pane: a player can hit a mob that is penned
+     * in without walking into the pen, and a companion does the same. Only a block that really
+     * fills its space — a wall, a chest, a full block of stone — stands in the way.</p>
+     *
+     * @param companion the fighter
+     * @param target    the mob it wants to hit
+     * @return true when nothing solid stands between them
+     */
+    static boolean canSeeMelee(Mannequin companion, LivingEntity target) {
+        return canSee(companion, target, true);
+    }
+
+    private static boolean canSee(Mannequin companion, LivingEntity target, boolean meleeLine) {
         if (companion == null || target == null) {
             return false;
         }
@@ -62,6 +81,10 @@ final class CompanionLineOfSight {
         Location targetLocation = target.getLocation();
         // The middle of the mob's body is what the shot is aimed at.
         double targetY = targetLocation.getY() + target.getHeight() * 0.5;
+        if (meleeLine) {
+            return clearBetweenMelee(world, eye.getX(), eye.getY(), eye.getZ(),
+                    targetLocation.getX(), targetY, targetLocation.getZ());
+        }
         return clearBetween(world, eye.getX(), eye.getY(), eye.getZ(), targetLocation.getX(),
                 targetY, targetLocation.getZ());
     }
@@ -80,6 +103,32 @@ final class CompanionLineOfSight {
      */
     static boolean clearBetween(World world, double fromX, double fromY, double fromZ,
                                 double toX, double toY, double toZ) {
+        return walkLine(world, fromX, fromY, fromZ, toX, toY, toZ,
+                CompanionLineOfSight::blocksTheShot);
+    }
+
+    /**
+     * Whether a melee line between the two points is free of blocks that really stand in the way.
+     *
+     * <p>A sword reaches through a thin barrier. A fence, a glass pane, a wall of cobblestone
+     * and iron bars are all thin enough that a player can hit a mob through them — a mob penned
+     * in a farm is hit without walking into the pen. Only a block that fills its space stands
+     * between the companion and its target.</p>
+     */
+    static boolean clearBetweenMelee(World world, double fromX, double fromY, double fromZ,
+                                     double toX, double toY, double toZ) {
+        return walkLine(world, fromX, fromY, fromZ, toX, toY, toZ,
+                CompanionLineOfSight::blocksTheMelee);
+    }
+
+    /**
+     * Walks the line between two points in small steps, reporting the first block that blocks it.
+     *
+     * @param check what counts as a block in the way
+     */
+    private static boolean walkLine(World world, double fromX, double fromY, double fromZ,
+                                    double toX, double toY, double toZ,
+                                    LineCheck check) {
         double dx = toX - fromX;
         double dy = toY - fromY;
         double dz = toZ - fromZ;
@@ -116,13 +165,84 @@ final class CompanionLineOfSight {
             for (int checkY = Math.min(lastY == Integer.MIN_VALUE ? y : lastY, y);
                     checkY <= Math.max(lastY == Integer.MIN_VALUE ? y : lastY, y);
                     checkY++) {
-                if (blocksTheShot(world.getBlockAt(x, checkY, z))) {
+                if (check.blocks(world.getBlockAt(x, checkY, z), checkY, sampleY)) {
                     return false;
                 }
             }
             lastY = y;
         }
         return true;
+    }
+
+    /** What counts as a block in the way of a line, at a given height. */
+    private interface LineCheck {
+        boolean blocks(Block block, int blockY, double sampleY);
+    }
+
+    /**
+     * Whether a collision shape covers the given height in world space.
+     *
+     * <p>The shape of a block may be given in the block's own space or in the world's, and the
+     * two are told apart by where the shape starts: a shape in world space begins at the block
+     * it belongs to, one in the block's own space begins at zero.</p>
+     */
+    private static boolean shapeCovers(Block block, int blockY, double sampleY) {
+        for (org.bukkit.util.BoundingBox box : block.getCollisionShape().getBoundingBoxes()) {
+            boolean inWorldSpace = box.getMinY() >= blockY && box.getMaxY() <= blockY + 1.0;
+            double bottom = inWorldSpace ? box.getMinY() : blockY + box.getMinY();
+            double top = inWorldSpace ? box.getMaxY() : blockY + box.getMaxY();
+            if (sampleY >= bottom - 0.0001 && sampleY <= top + 0.0001) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a block stands in the way of a melee blow.
+     *
+     * <p>A sword reaches through a thin barrier, so only a block that fills its space really
+     * stands in the way: a wall, a chest, a full block of stone. A fence, a glass pane, a
+     * cobblestone wall and iron bars are all thin — a player can hit a mob through them, and
+     * so can a companion. That is what lets a companion fight a mob that is penned in a farm
+     * without walking into the pen.</p>
+     *
+     * <p>How much of the block the line actually passes through matters: a slab fills half its
+     * block, so a line that runs over it is clear, while a line that dips into it is not.</p>
+     */
+    private static boolean blocksTheMelee(Block block, int blockY, double sampleY) {
+        Material type = block.getType();
+        if (type == Material.AIR || type == Material.CAVE_AIR || type == Material.VOID_AIR) {
+            return false;
+        }
+        if (type == Material.WATER || type == Material.LAVA) {
+            // A fluid does not stop a sword.
+            return false;
+        }
+        // A carpet lies flat on the ground and never stands between two points that are
+        // both above the floor.
+        if (PathPlanner.isCarpet(block)) {
+            return false;
+        }
+        // A door or a fence gate is not a wall: the companion opens it on the way through, so
+        // it does not stop the blow either.
+        if (PathPlanner.isOpenable(block)) {
+            return false;
+        }
+        // The thin barriers a sword reaches through. The block data types are used rather than
+        // the material names, because the material names differ from version to version while
+        // the types do not.
+        if (PathPlanner.isBarrier(block)) {
+            return false;
+        }
+        // Iron bars have no block data type of their own, so they are named directly.
+        if (type == Material.IRON_BARS) {
+            return false;
+        }
+        // Anything that actually occupies space blocks the blow — but only where the line
+        // really goes through it. The collision shape is the honest answer: a slab takes up
+        // half a block, so a line above it passes over untouched.
+        return shapeCovers(block, blockY, sampleY);
     }
 
     /**
@@ -132,7 +252,7 @@ final class CompanionLineOfSight {
      * or a carpet does not stop a trident in a way that matters, and treating them as walls
      * would leave a companion standing in the open with a clear target, refusing to throw.</p>
      */
-    private static boolean blocksTheShot(Block block) {
+    private static boolean blocksTheShot(Block block, int blockY, double sampleY) {
         Material type = block.getType();
         if (type == Material.AIR || type == Material.CAVE_AIR || type == Material.VOID_AIR) {
             return false;
@@ -167,7 +287,9 @@ final class CompanionLineOfSight {
         }
         // Anything that actually occupies space blocks the shot. The collision shape is the
         // honest answer: a slab, a stair and a fence all take up room, a flower does not.
-        return !block.getCollisionShape().getBoundingBoxes().isEmpty();
+        // The height matters too: a slab fills half its block, so a line running over it
+        // passes untouched.
+        return shapeCovers(block, blockY, sampleY);
     }
 
     /**
@@ -183,6 +305,22 @@ final class CompanionLineOfSight {
         Location targetLocation = target.getLocation();
         double targetY = targetLocation.getY() + target.getHeight() * 0.5;
         return clearBetween(world, eye.getX(), eye.getY(), eye.getZ(), targetLocation.getX(),
+                targetY, targetLocation.getZ());
+    }
+
+    /**
+     * Whether a companion standing at the given spot could hit the target with a melee blow.
+     *
+     * <p>This is the check for a mob behind a thin barrier: the line may pass through a fence
+     * or a glass pane, because a sword does too.</p>
+     */
+    static boolean canSeeMeleeFrom(World world, Location eye, LivingEntity target) {
+        if (world == null || target == null || eye == null) {
+            return false;
+        }
+        Location targetLocation = target.getLocation();
+        double targetY = targetLocation.getY() + target.getHeight() * 0.5;
+        return clearBetweenMelee(world, eye.getX(), eye.getY(), eye.getZ(), targetLocation.getX(),
                 targetY, targetLocation.getZ());
     }
 
