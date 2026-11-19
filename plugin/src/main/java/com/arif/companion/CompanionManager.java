@@ -217,8 +217,6 @@ public final class CompanionManager {
      * cases, so this one does.</p>
      */
     private static final long TARGET_BLOCKED_ENGAGE_TICKS = 100L;
-    /** How far the companion has to shrink the gap to count as making progress. */
-    private static final double ENGAGE_PROGRESS_DELTA = 0.2;
     private static final long FAILED_PLAN_RETRY_TICKS = 20L;
     private static final int PATH_RADIUS = 48;
     /**
@@ -2342,8 +2340,8 @@ public final class CompanionManager {
      *
      * <p>Unlike {@link #trackUnreachable}, this runs while the companion is still walking: a mob
      * behind a fence may have a full route to the near side, but the gap never shrinks enough to
-     * reach or see the mob. A fleeing mob that the companion is still chasing resets this clock
-     * whenever the gap shrinks.</p>
+     * reach or see the mob. The clock only resets when the companion could actually swing, or
+     * when the mob crosses into melee reach — not when a shimmying mob drifts closer by itself.</p>
      */
     private static long trackBlockedEngage(FollowState state, double strikeDistance, long currentTick,
                                            boolean canAttempt) {
@@ -2352,12 +2350,14 @@ public final class CompanionManager {
             state.blockedEngageSinceTick = Long.MIN_VALUE;
             return Long.MIN_VALUE;
         }
-        if (strikeDistance < state.lastEngageDistance - ENGAGE_PROGRESS_DELTA) {
-            state.lastEngageDistance = strikeDistance;
+        // Only crossing into melee reach counts as progress. A caged mob shimmying closer
+        // used to shrink the gap without the companion moving and reset this clock forever.
+        boolean wasOutsideMelee = state.lastEngageDistance > ATTACK_REACH;
+        state.lastEngageDistance = Math.min(state.lastEngageDistance, strikeDistance);
+        if (wasOutsideMelee && strikeDistance <= ATTACK_REACH) {
             state.blockedEngageSinceTick = Long.MIN_VALUE;
             return Long.MIN_VALUE;
         }
-        state.lastEngageDistance = Math.min(state.lastEngageDistance, strikeDistance);
         if (state.blockedEngageSinceTick == Long.MIN_VALUE) {
             state.blockedEngageSinceTick = currentTick;
         }
@@ -2383,14 +2383,7 @@ public final class CompanionManager {
             }
             return findFiringSpot(npc, living) != null;
         }
-        Location stand = meleeSpot(npc, living);
-        Location eye = stand.clone().add(0.0, EYE_HEIGHT, 0.0);
-        if (!CompanionLineOfSight.canSeeFrom(npc.getWorld(), eye, living)) {
-            return false;
-        }
-        List<org.bukkit.util.Vector> route = PathPlanner.findPath(npc.getWorld(), npc.getLocation(),
-                stand, PATH_RADIUS, true, false, false);
-        return !route.isEmpty();
+        return findMeleeEngageSpot(npc, living) != null;
     }
 
     /**
@@ -2608,6 +2601,53 @@ public final class CompanionManager {
      *
      * @return the spot to walk to, or {@code null} when no spot with a clear line was found
      */
+    /**
+     * A stand point within melee reach of the mob where the companion can see it and walk to it.
+     *
+     * <p>Unlike a single {@link #meleeSpot} on the near side, this searches around the mob the
+     * same way {@link #findFiringSpot} does for throwers. A caged farm zombie may only have a
+     * clear line on one side; the companion side is often the wrong one.</p>
+     */
+    private static Location findMeleeEngageSpot(Mannequin npc, LivingEntity target) {
+        World world = npc.getWorld();
+        Location targetLocation = target.getLocation();
+        Location npcLocation = npc.getLocation();
+        double[] radii = {1.0, 1.6, 2.2, ATTACK_REACH};
+        double baseAngle = Math.atan2(npcLocation.getZ() - targetLocation.getZ(),
+                npcLocation.getX() - targetLocation.getX());
+        for (double radius : radii) {
+            List<Location> candidates = new ArrayList<>();
+            for (int step = 0; step < 8; step++) {
+                double angle = baseAngle + Math.PI * 2.0 * step / 8.0;
+                Location probe = new Location(world,
+                        targetLocation.getX() + Math.cos(angle) * radius,
+                        targetLocation.getY(),
+                        targetLocation.getZ() + Math.sin(angle) * radius);
+                Location standing = WaitPostResolver.standingAt(world, probe);
+                if (standing == null || !CompanionLineOfSight.standable(standing)) {
+                    continue;
+                }
+                Location eye = standing.clone().add(0.0, EYE_HEIGHT, 0.0);
+                if (!CompanionLineOfSight.canSeeFrom(world, eye, target)) {
+                    continue;
+                }
+                if (combatDistance(target, standing) > ATTACK_REACH + 0.05) {
+                    continue;
+                }
+                candidates.add(standing);
+            }
+            for (Location candidate : candidates) {
+                if (hasWalkableRoute(world, npcLocation, candidate)) {
+                    return candidate;
+                }
+            }
+            if (!candidates.isEmpty()) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     private static Location findFiringSpot(Mannequin npc, LivingEntity target) {
         World world = npc.getWorld();
         Location targetLocation = target.getLocation();
@@ -2981,6 +3021,15 @@ public final class CompanionManager {
             // Once a fight starts it is held until the mob dies: a chase is never ended by
             // distance alone, and the emergency teleport brings the companion home afterwards.
             LivingEntity attackTarget = resolveAttackTarget(npc, owner, state);
+            // Drop a fight the companion can no longer win: a zombie locked behind glass may
+            // still target the owner, but nothing on its ground is actually walkable.
+            if (attackTarget != null && !isEngageable(npc, state, attackTarget)) {
+                releaseTarget(state, attackTarget, currentTick);
+                attackTarget = null;
+                targetSpot = waitMode
+                        ? waitSpot(npc, state, currentTick)
+                        : formationSpot(npc, owner, state, closeMode);
+            }
             // A mob the companion cannot hurt ends the fight. The companion walks up to it,
             // cannot land a hit — the mob is behind a fence, or out of reach on a ledge — and
             // would stand there for ever, because a fight is otherwise held until the mob dies.
